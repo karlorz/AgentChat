@@ -1900,6 +1900,8 @@ module.exports = {
     clickSend,
     waitForCompletion,
     extractResponse,
+    // Shared in-page extractor for adapters that need the factory's text shape.
+    IN_PAGE_TEXT_WITH_MATH,
     // Shared patterns — avoid duplicating common CN quota/dismiss regexes
     COMMON_CN_QUOTA_PATTERNS,
     COMMON_DISMISS_PATTERNS,

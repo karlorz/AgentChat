@@ -1,6 +1,6 @@
 ---
 name: AgentChat-OneWeb
-description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT->Claude->Qwen->Kimi->MiniMax->MiMo->DeepSeek). Use for AI provider failover, fallback chain, multi-provider routing, or "send to any available AI". MANDATORY EXECUTION - invoking this skill REQUIRES running `node ~/.claude/skills/AgentChat-OneWeb/index.js "<prompt>"` as the FIRST action and quoting its `[receipt] AGENTCHAT_RUN` line in the final answer; explaining the skill or answering from model knowledge without a receipt is a violation.
+description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT->Claude->Qwen->Kimi->MiniMax->MiMo->DeepSeek). Use for AI provider failover, fallback chain, multi-provider routing, or "send to any available AI". MANDATORY EXECUTION - invoking this skill REQUIRES running `node ~/.agents/skills/AgentChat-OneWeb/index.js "<prompt>"` as the FIRST action and quoting its `[receipt] AGENTCHAT_RUN` line in the final answer; explaining the skill or answering from model knowledge without a receipt is a violation.
 ---
 
 # AI Fallback Chain — Multi-Provider CDP Bridge
@@ -17,7 +17,7 @@ description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT-
 读完本 SKILL.md 之后的**下一个工具调用**必须是：
 
 ```bash
-node ~/.claude/skills/AgentChat-OneWeb/index.js "<用户prompt>"
+node ~/.agents/skills/AgentChat-OneWeb/index.js "<用户prompt>"
 ```
 
 中间不允许插入文件浏览、架构分析、"我将会…"式的规划叙述（至多一行说明即将执行的命令）。web AI 返回结果后，才可补充你自己的分析。
@@ -31,7 +31,7 @@ node ~/.claude/skills/AgentChat-OneWeb/index.js "<用户prompt>"
 
 - **最终回答末尾必须原样引用这行 receipt**（至少包含 run_id、provider_used、exit）。
 - 没有 receipt = 没有执行 = 违规，必须回去执行。
-- `run_id` 为随机生成并同步落盘到 `~/.claude/skills/AgentChat-OneWeb/data/receipts.jsonl`，用户可用 `grep <run_id>` 核对——凭空编造无法通过核对。
+- `run_id` 为随机生成并同步落盘到 `~/.agents/skills/AgentChat-OneWeb/data/receipts.jsonl`，用户可用 `grep <run_id>` 核对——凭空编造无法通过核对。
 - **执行失败（exit≠0）同样有 receipt**：必须引用失败回执并说明原因（限流/未登录/超时…），在此之后才允许用模型自身能力回答，且必须明确标注"web AI 未参与本次回答"。
 
 ### 3. 违规模式（全部禁止）
@@ -72,7 +72,7 @@ node ~/.claude/skills/AgentChat-OneWeb/index.js "<用户prompt>"
 检测到图片生成请求时，**必须**在命令中加入 `--image` flag：
 
 ```bash
-node ~/.claude/skills/AgentChat-OneWeb/index.js --image "<用户原始prompt>"
+node ~/.agents/skills/AgentChat-OneWeb/index.js --image "<用户原始prompt>"
 ```
 
 index.js 会在进程内把标准增强指令（"请使用你的图片生成模型/工具主动生成…"）追加到 prompt 末尾，并在 telemetry 中记录 `image_prompt_enhanced: true`。**禁止手工改写 prompt 来替代 `--image`** —— 手工追加是纯 prose 约束，属于 receipt 机制要消灭的那类"叙述性合规"；flag 路径是机器可验证的（telemetry 可查）。
@@ -158,7 +158,7 @@ AGENTCHAT_ENV_FILE=/path/to/AgentChat/.env \
 
 ```
 Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → MiMo → DeepSeek
-(Pro Extended)                                                  (last resort)
+(3.6 Flash + Extended Thinking default)                            (last resort)
 ```
 
 First available provider wins. Each step falls through ONLY on confirmed unavailability (quota/auth/model-degraded), never on transient network errors.
@@ -176,11 +176,11 @@ First available provider wins. Each step falls through ONLY on confirmed unavail
 | **L3: 模型质量** | Pro/高级模型是否可用 | Gemini 特有，其他 provider 跳过 |
 
 ### Gemini 特殊处理
-Gemini 是 chain 中唯一要求 **Pro Extended Thinking** 的 provider。
-模型激活分三层降级：
-1. **Pro Extended Thinking**（需 Gemini Pro 订阅）— 首选
-2. **Flash 模式**（免费 tier 兜底）— Pro Extended 不可用时自动切换
-3. 两者都失败 → `ERR_MODEL_DEGRADED`，降级到 ChatGPT
+Gemini 默认使用并**必须验证选中 `3.6 Flash` 及 `延伸思考`**（免费 tier，速度快）；`3.5 Flash-Lite`、`3.1 Pro`、标准思考与任何复用 tab 上的既有状态都不满足默认契约。如需 Pro 模型，设 `AGENTCHAT_GEMINI_MODEL=pro` 启用 **Pro Extended Thinking**（需 Gemini Pro 订阅，3-5 分钟生成）。
+模型激活策略（v34+）：
+1. **3.6 Flash + Extended Thinking**（默认，`AGENTCHAT_GEMINI_MODEL=flash` 或未设）— 仅在 Gemini 菜单中确认两项均勾选后发送 prompt
+2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **3.6 Flash + Extended Thinking**
+3. 无法选择或验证这两个默认状态 → Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Pro / Flash-Lite / 标准思考 / 页面现有模型冒充默认 Flash
 
 降级触发条件由各 adapter 的 `quotaPatterns` 定义（`lib/providers/adapters/<name>.js`），
 是权威来源。SKILL.md 不再维护第二份副本（过去已出现与代码不一致的漂移）。
@@ -203,13 +203,13 @@ Gemini 是 chain 中唯一要求 **Pro Extended Thinking** 的 provider。
 #      Tier 1: 平台启动脚本（若部署了 scripts/ — 仓库完整 clone 场景）
 #      Tier 2: 内嵌启动器 — 直接定位 Chrome 二进制并以加固 flag 集启动。
 #              workbuddy 等只拷贝 skills 树的宿主（scripts/ 永远缺失）走此路径。
-#    skill-only 部署（workbuddy / ~/.claude/skills/）只需保证:
+#    skill-only 部署（workbuddy / ~/.agents/skills/）只需保证:
 #      a) .env 放在 skills/ 的上级目录（与 scripts/ 本应在的位置相同），
 #         或设 AGENTCHAT_ENV_FILE 指向它 — Node 侧自 v16 起自行安全加载 .env
 #      b) .env 里 CHROMIUM_PATH 指向系统 Chrome（Windows 例:
 #         C:\Program Files\Google\Chrome\Application\chrome.exe；
 #         未设时按标准安装路径自动探测，含 Edge 兜底）
-#      c) Windows + agent 宿主（skill 装在 ~/.claude/skills/ 等）: skill 进程
+#      c) Windows + agent 宿主（skill 装在 ~/.agents/skills/ 等）: skill 进程
 #         看不到仓库根的 .env 与 scripts/（lib 的候选路径会解析到
 #         ~/.claude/.env）。用两个逃生门环境变量接回来（设为用户级，
 #         工具调用子进程自动继承）:
@@ -234,9 +234,9 @@ pgrep -f "start-chrome-debug" || bash scripts/start-chrome-debug.sh
 curl -s http://127.0.0.1:9222/json/version | python3 -c "import json,sys; print(json.load(sys.stdin).get('Browser','FAIL'))"
 
 # 3. playwright-core (npm, ~3MB)
-(cd ~/.claude/skills/AgentChat-OneWeb && npm install)
+(cd ~/.agents/skills/AgentChat-OneWeb && npm install)
 #    ⚠️ 本 skill 依赖同级 skills/lib/ 共享库（require('../lib/…')）——
-#    安装到 ~/.claude/skills/ 时必须整棵拷贝：AgentChat-OneWeb/ 与 lib/ 并排。
+#    安装到 ~/.agents/skills/ 时必须整棵拷贝：AgentChat-OneWeb/ 与 lib/ 并排。
 #    只拷 AgentChat-OneWeb/ 会在启动时报出带修复指引的 FATAL（v14 起，不再是裸 MODULE_NOT_FOUND）。
 
 # 4. 至少一个 AI service 已登录 (Chrome profile 中)
@@ -255,25 +255,25 @@ curl -s http://127.0.0.1:9222/json/version | python3 -c "import json,sys; print(
 
 ```bash
 # 基本用法 — 自动遍历 fallback chain（默认保留浏览器标签）
-node ~/.claude/skills/AgentChat-OneWeb/index.js "Your prompt"
+node ~/.agents/skills/AgentChat-OneWeb/index.js "Your prompt"
 
 # 执行完毕后自动清理浏览器标签
-node ~/.claude/skills/AgentChat-OneWeb/index.js --close "Your prompt"
+node ~/.agents/skills/AgentChat-OneWeb/index.js --close "Your prompt"
 
 # 指定超时 (ms)
-node ~/.claude/skills/AgentChat-OneWeb/index.js --timeout=600000 "Long prompt..."
+node ~/.agents/skills/AgentChat-OneWeb/index.js --timeout=600000 "Long prompt..."
 
 # 从 stdin 读取
-echo "Prompt from pipe" | node ~/.claude/skills/AgentChat-OneWeb/index.js
+echo "Prompt from pipe" | node ~/.agents/skills/AgentChat-OneWeb/index.js
 
 # 环境检查 (不发送 prompt)
-node ~/.claude/skills/AgentChat-OneWeb/index.js --smoke
+node ~/.agents/skills/AgentChat-OneWeb/index.js --smoke
 
 # CDP 连通性检查
-node ~/.claude/skills/AgentChat-OneWeb/index.js --doctor
+node ~/.agents/skills/AgentChat-OneWeb/index.js --doctor
 
 # 强制指定起始 provider (跳过前面的)
-node ~/.claude/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
+node ~/.agents/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
 ```
 
 ### CLI Flags
@@ -300,7 +300,7 @@ node ~/.claude/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
 
 - **stdout**: 成功时输出 AI 响应原文
 - **stderr**: 诊断日志，`[fallback]` 前缀
-- **telemetry**: 写入 `~/.claude/skills/AgentChat-OneWeb/data/fallback-telemetry.jsonl`
+- **telemetry**: 写入 `~/.agents/skills/AgentChat-OneWeb/data/fallback-telemetry.jsonl`
 
 ```json
 {
@@ -363,7 +363,7 @@ index.js
    失败后关闭当前 tab，为下一个 provider 创建新 tab。
 3. **Quota detection via DOM** — 不依赖 HTTP 状态码，而是检查页面 DOM 内容判断是否被限流。
 4. **No cross-provider context** — 不对不同 provider 之间传递上下文。每次都是独立的 prompt。
-5. **Pro Extended mandatory for Gemini** — Gemini 必须激活 Pro Extended 才使用，否则直接降级。
+5. **Verified 3.6 Flash + Extended Thinking default, Pro Extended opt-in** — Gemini 默认必须在模型菜单中确认 **`3.6 Flash`** 与 **`延伸思考`** 都已选中；无法验证任一项则本 provider 失败并降级，绝不使用 Flash-Lite、Pro 或标准思考伪装成功。Pro Extended Thinking 通过 `AGENTCHAT_GEMINI_MODEL=pro` 显式启用（v34+）。
 
 ---
 
@@ -373,7 +373,7 @@ index.js
 
 | Provider | 关键差异 | 详见 |
 |----------|---------|------|
-| **Gemini** | Pro Extended 强制激活、bursty 输出检测、120s stop-btn 延长、Action Toolbar 完成锚点 | `adapters/gemini.js` |
+| **Gemini** | 默认严格选中并复开菜单验证 **`3.6 Flash` + `延伸思考`**；Pro Extended opt-in (`AGENTCHAT_GEMINI_MODEL=pro`)、bursty 输出检测、120s stop-btn 延长、Action Toolbar 完成锚点、搜索→回答间隙 grace re-read | `adapters/gemini.js` |
 | **ChatGPT** | 3 层输入策略 (clipboard→simulated paste→chunked keyboard)、React 发送按钮状态验证 | `adapters/chatgpt.js` |
 | **Claude** | ProseMirror 编辑器、"Thinking" 占位符过滤、嵌入搜索块剥离 | `adapters/claude.js` |
 | **Qwen** | React SPA 3s 延迟、stop-btn detached 模式、模型名前缀剥离 | `adapters/qwen.js` |

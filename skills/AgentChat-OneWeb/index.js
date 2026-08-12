@@ -194,8 +194,11 @@ const { PROVIDER_CHAIN } = require('../lib/providers/chain');
 //   DeepSeek: Standard pipeline, ds-markdown response
 
 const PROVIDER_KEYS = ['gemini','chatgpt','claude','qwen','kimi','minimax','mimo','deepseek'];
+const ADAPTER_CONFIGS = Object.fromEntries(
+  PROVIDER_KEYS.map(k => [k, require(`../lib/providers/adapters/${k}`)])
+);
 const RUNNERS = Object.fromEntries(PROVIDER_KEYS.map(k => {
-  const cfg = require(`../lib/providers/adapters/${k}`);
+  const cfg = ADAPTER_CONFIGS[k];
   // Gemini uses its own spinner-free runner; all others share the progress spinner
   return [k, createProviderRunner(k === 'gemini' ? cfg : { ...cfg, onProgress: spinner })];
 }));
@@ -823,7 +826,10 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
             break;
         }
 
-        const perProvTimeout = Math.min(providerTimeout, remainingTotal);
+        // v32: adapter can override the per-provider timeout (e.g. Gemini Pro
+        // Extended needs 360s vs the 180s default for long thinking + search).
+        const override = ADAPTER_CONFIGS[provider.key]?.providerTimeoutOverride;
+        const perProvTimeout = Math.min(override || providerTimeout, remainingTotal);
 
         log(`\n▶ Provider ${i + 1}/${PROVIDER_CHAIN.length}: ${provider.name} (${Math.round(perProvTimeout / 1000)}s budget)`);
         const timer = startTimer(`${provider.name}`);

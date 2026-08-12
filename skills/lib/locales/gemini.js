@@ -44,7 +44,9 @@ const PROFILES = {
     },
 
     zh_TW: {
-        modelAria:       '開啟模式挑選器',
+        // 2026-08 current zh-TW button: 「開模式選擇器，目前係 <模型>」.
+        // Keep this a stable substring rather than the volatile current-mode suffix.
+        modelAria:       '開模式選擇器',
         modelVerify:     'Pro 延伸',   // v9: 新 UI 用「延伸」替代「延長」
         proDesc:         '進階',
         thinking:        '思考程度',
@@ -91,7 +93,7 @@ const PROFILES = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const FUZZY = {
-    modelAria:    /打开模式选择器|開啟模式挑選器|Model selector|モデルセレクターを開く/i,
+    modelAria:    /打开模式选择器|開(?:啟)?模式(?:挑選|選擇)器|Model selector|モデルセレクターを開く/i,
     modelVerify:  /Pro\s*(扩展|延伸|延長|Extended|拡張)/i,
     proDesc:      /進階|进阶|高等数学|Advanced|高度な数学/i,
     thinking:     /思考等级|思考程度|Thinking|Thought|思考レベル/i,
@@ -135,6 +137,18 @@ let _profile = null;  // 当前使用的精确 profile（null = 回退 fuzzy）
 // API
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** Infer a supported Gemini UI locale from a model button's visible text. */
+function inferLocaleFromButtonText(text) {
+    if (!String(text || '').trim()) return null;
+    // aria-label 最可靠：'開啟模式挑選器' = zh_TW, '打开模式选择器' = zh_CN
+    // v32: 2026-08 zh-TW 按钮改名 "開啟模式挑選器" → "開模式選擇器，目前係 <model>"
+    if (/開啟|開模式|選擇器|挑選|選取|目前係|目前為|延長|延伸/.test(text)) return 'zh_TW';
+    if (/打开|选择器|选择|扩展|目前为/.test(text)) return 'zh_CN';
+    if (/Model selector|Extended/.test(text)) return 'en';
+    if (/モデル|拡張/.test(text)) return 'ja';
+    return null;
+}
+
 /**
  * 从 Gemini 页面自动检测 UI locale。
  * 优先级：navigator.language → <html lang> → 按钮文本反向推断 → null
@@ -153,15 +167,7 @@ async function detectLocale(page) {
             return (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
         });
 
-        const btnLocale = (() => {
-            if (!btnText.trim()) return null;
-            // aria-label 最可靠：'開啟模式挑選器' = zh_TW, '打开模式选择器' = zh_CN
-            if (/開啟|挑選|延長/.test(btnText)) return 'zh_TW';
-            if (/打开|选择|扩展/.test(btnText)) return 'zh_CN';
-            if (/Model selector|Extended/.test(btnText)) return 'en';
-            if (/モデル|拡張/.test(btnText)) return 'ja';
-            return null;
-        })();
+        const btnLocale = inferLocaleFromButtonText(btnText);
 
         // 按钮文本权威最高 → 直接返回
         if (btnLocale && PROFILES[btnLocale]) return btnLocale;
@@ -247,6 +253,7 @@ module.exports = {
     PROFILES,
     FUZZY,
     STATIC,
+    inferLocaleFromButtonText,
     detectLocale,
     setLocale,
     txt,

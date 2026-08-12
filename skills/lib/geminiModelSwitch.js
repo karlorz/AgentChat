@@ -31,7 +31,8 @@
  *      migrated into a web component is no longer invisible to us.
  *
  * Failure POLICY moved to the adapter (see adapters/gemini.js): model
- * activation failure no longer nukes the whole Gemini provider by default.
+ * activation failure fail-closes the Gemini provider, allowing the normal
+ * fallback chain to continue instead of using an unverified stale tab.
  *
  * v9 history preserved: flat-menu Extended selection with nested-submenu
  * fallback, aria-label locale correction, modelVerify-based verification.
@@ -63,15 +64,87 @@ const L = require('./locales/gemini');
 const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const asRe = (v) => (v instanceof RegExp ? v : new RegExp(escapeRe(v), 'i'));
 
-// locale-aware helpers — delegate to the profiles loaded above
-// v9: includesExtended checks button aria-label (activated state), not menu item text.
-// The button shows modelVerify (e.g. "Pro延長"), not extended (e.g. "延伸思考").
+// v9: modelVerify checks the activated *thinking* state. All current models
+// support Extended Thinking, so it is NOT sufficient proof of the Pro model.
 const includesExtended  = (t) => asRe(L.txt('modelVerify')).test(t)
     || asRe(L.txt('extended')).test(t);  // fallback for old UI where extended is in aria
 const includesStandard  = (t) => asRe(L.txt('standard')).test(t);
+const isProExtendedAria = (t) => /\bPro\b/i.test(String(t || '')) && includesExtended(t);
 // Pro model check: innerText 含 "Pro" 且含当前 locale 的 proDesc
 const proDesc           = () => asRe(L.txt('proDesc'));
 const modelBtnSelector  = () => L.modelBtnCSS();
+
+// v34: Default means the current latest full Flash model plus Extended
+// Thinking, not merely any string containing "Flash". Flash-Lite is a distinct
+// product tier and must never satisfy the default-model contract.
+const DEFAULT_FLASH_MODEL = Object.freeze({
+    id: '3.6-flash',
+    displayName: '3.6 Flash',
+});
+
+function isDefaultFlashText(text) {
+    const normalized = String(text || '').trim().replace(/\s+/g, ' ');
+    if (!/^3\.6\s+Flash(?:\s|$)/i.test(normalized)) return false;
+    // Never silently substitute an edition/tier that happens to share the
+    // "3.6 Flash" prefix. The target is the plain current full Flash item.
+    return !/\b(?:Lite|Pro|Ultra)\b/i.test(normalized);
+}
+
+function isSelectedGeminiModelItem(item) {
+    return !!(item && (item.selected === true
+        || String(item.ariaSelected || '').toLowerCase() === 'true'
+        || String(item.ariaChecked || '').toLowerCase() === 'true'));
+}
+
+function isDefaultFlashItem(item) {
+    return isSelectedGeminiModelItem(item) && isDefaultFlashText(item.text);
+}
+
+const EXTENDED_THINKING_RE = /(?:延伸思考|延長思考|扩展思考|Extended\s+thinking|拡張思考)/i;
+
+function isExtendedThinkingText(text) {
+    return EXTENDED_THINKING_RE.test(String(text || '').trim());
+}
+
+function isDefaultFlashExtendedMenuState(items) {
+    if (!Array.isArray(items)) return false;
+    return items.some(isDefaultFlashItem)
+        && items.some(item => isSelectedGeminiModelItem(item)
+            && isExtendedThinkingText(item && item.text));
+}
+
+/**
+ * Model menu proof data is deliberately plain JSON so it can be both returned
+ * across Playwright's page boundary and tested without a browser.
+ */
+function isGeminiModelMenuItems(items) {
+    if (!Array.isArray(items)) return false;
+    const identified = items.filter(item => {
+        if (!item || !String(item.text || '').trim()) return false;
+        return !!item.dataModeId
+            || /^bard-mode-option-/i.test(String(item.dataTestId || ''));
+    });
+    return identified.length >= 2;
+}
+
+function selectedGeminiModelText(items) {
+    if (!Array.isArray(items)) return '';
+    const selected = items.find(item => item && isSelectedGeminiModelItem(item)
+        && String(item.text || '').trim());
+    return selected ? String(selected.text).trim() : '';
+}
+
+const GEMINI_MODE_BUTTON_SELECTOR = '[data-test-id="bard-mode-menu-button"]';
+const GEMINI_MODEL_OPTION_SELECTOR =
+    'gem-menu-item[data-mode-id], [data-test-id^="bard-mode-option-"]';
+
+// The thinking-level row belongs to the same menu but has no data-mode-id.
+// Keep it separate so model-menu proof still requires actual model options.
+const EXTENDED_THINKING_OPTION_SELECTOR =
+    'gem-menu-item:not([data-mode-id]):not([data-test-id^="bard-mode-option-"])';
+
+const MODEL_BUTTON_CACHE_KIND = 'gemini-model-button';
+const MODEL_BUTTON_CACHE_VERSION = 2;
 
 // ── v10: selector cache (self-healing persistence) ───────────────────────────
 // Skill mounts are frequently READ-ONLY (see lib/telemetry.js rationale), so
@@ -90,7 +163,19 @@ function cachePath() { return path.join(stateDir(), CACHE_FILE); }
 function loadCache() {
     try {
         const parsed = JSON.parse(fs.readFileSync(cachePath(), 'utf8'));
-        return (parsed && typeof parsed === 'object') ? parsed : {};
+        if (!parsed || typeof parsed !== 'object') return {};
+
+        // v33/v34: pre-v33 entries were only "a selector that opened some menu".
+        // Treat them as untrusted: an Upload tools selector was cached in the
+        // field and silently caused default-Flash calls to run under 3.1 Pro.
+        const btn = parsed.modelButton;
+        if (btn && (btn.kind !== MODEL_BUTTON_CACHE_KIND
+            || btn.version !== MODEL_BUTTON_CACHE_VERSION
+            || typeof btn.sel !== 'string')) {
+            delete parsed.modelButton;
+            try { fs.writeFileSync(cachePath(), JSON.stringify(parsed, null, 2)); } catch (_) {}
+        }
+        return parsed;
     } catch (_) { return {}; }
 }
 
@@ -119,7 +204,7 @@ function dropCache(key) {
  *  (verify-by-effect Escapes and moves on), but each wrong click costs ~1-2s,
  *  so specificity ordering still matters. */
 const MODEL_BTN_CANDIDATES = [
-    '[data-test-id="bard-mode-menu-button"]',
+    GEMINI_MODE_BUTTON_SELECTOR,
     '[data-test-id*="mode-menu"]',
     '[data-testid*="mode-menu"]',
     '[data-test-id*="model"]',
@@ -142,7 +227,7 @@ const MODEL_KEYWORDS = [
     'Pro', 'Flash', 'Thinking', 'Extended', 'Standard',
     'Advanced', 'Fast',
     '扩展', '延長', '延伸', '拡張', '思考', '模型', '模式', 'モデル',
-    '2.5', '3.0', '2.0', '3.5',
+    '2.5', '3.0', '2.0', '3.5', '3.1', '3.6',
 ];
 
 /** L3 + pre-click guard: common non-model buttons to skip outright. */
@@ -158,7 +243,7 @@ const NON_MODEL_KEYWORDS = [
     '发送', '傳送', 'Send', '送信',
     '麦克风', '麥克風', 'Microphone', 'マイク',
     '语音', '語音', 'Voice',
-    '上传', '上傳', 'Upload', 'Attach', '附加',
+    '上传', '上傳', '上載', 'Upload', 'Attach', '附加',
     '新对话', '新對話', 'New chat',
 ];
 
@@ -174,26 +259,32 @@ const NON_MODEL_RE = new RegExp(
 
 async function waitForAppReady(page, log, timeoutMs = 15000) {
     const start = Date.now();
-    const probes = [
-        L.STATIC.editor,
-        '[data-test-id*="mode"]',
-        'button[aria-haspopup]',
-    ];
-    while (Date.now() - start < timeoutMs) {
-        for (const sel of probes) {
+    const hasSpecificModelButton = async () => {
+        for (const sel of [GEMINI_MODE_BUTTON_SELECTOR, modelBtnSelector()]) {
             try {
-                const vis = await page.locator(sel).first()
-                    .isVisible({ timeout: 250 }).catch(() => false);
-                if (vis) {
-                    // Small settle: shell present, give the toolbar one beat.
-                    await page.waitForTimeout(300);
-                    return true;
-                }
-            } catch (_) { /* try next probe */ }
+                if (await page.locator(sel).first().isVisible({ timeout: 200 }).catch(() => false)) return true;
+            } catch (_) {}
         }
+        return false;
+    };
+    let editorSeenAt = 0;
+    while (Date.now() - start < timeoutMs) {
+        if (await hasSpecificModelButton()) {
+            await page.waitForTimeout(300);
+            return true;
+        }
+        try {
+            const editorVisible = await page.locator(L.STATIC.editor).first()
+                .isVisible({ timeout: 250 }).catch(() => false);
+            if (editorVisible && !editorSeenAt) editorSeenAt = Date.now();
+        } catch (_) { /* visibility probe is best-effort */ }
+        // Do not let an already-mounted editor make us race a lazy model
+        // switcher. Wait a bounded 8s after editor visibility; then the normal
+        // discovery/diagnostics path can explain a genuine selector drift.
+        if (editorSeenAt && Date.now() - editorSeenAt >= 8000) break;
         await page.waitForTimeout(500);
     }
-    log('gemini WARN: app-ready gate timed out — proceeding anyway');
+    log('gemini WARN: app-ready gate timed out waiting for model button — proceeding to diagnostics');
     return false;
 }
 
@@ -209,64 +300,115 @@ async function readAria(page, sel) {
     } catch (_) { return ''; }
 }
 
-/** Poll a button's aria/text against a regex (shadow-safe replacement for the
- *  old waitForFunction+document.querySelector verification). */
-async function waitAriaMatches(page, sel, re, timeoutMs = 5000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        const aria = await readAria(page, sel);
-        if (aria && re.test(aria)) return true;
-        await page.waitForTimeout(250);
+// ── v33/v34: Gemini-model-menu proof ─────────────────────────────────────
+// A generic overlay is not enough: clicking Upload tools also opens a menu with
+// text-filled items. Persisting that button poisoned the selector cache and let
+// default Flash requests silently run with the preselected Pro model.
+
+async function readVisibleGeminiModelMenuItems(page) {
+    try {
+        return await page.locator(GEMINI_MODEL_OPTION_SELECTOR).evaluateAll(els =>
+            els.filter(el => {
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0
+                    && style.display !== 'none' && style.visibility !== 'hidden';
+            }).map(el => ({
+                text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' '),
+                dataModeId: el.getAttribute('data-mode-id') || '',
+                dataTestId: el.getAttribute('data-test-id') || el.getAttribute('data-testid') || '',
+                selected: el.classList.contains('selected')
+                    || !!el.querySelector('.selected, [aria-label*="已選取"], [aria-label*="Selected"]'),
+                ariaSelected: el.getAttribute('aria-selected') || '',
+                ariaChecked: el.getAttribute('aria-checked') || '',
+            }))
+        );
+    } catch (_) { return []; }
+}
+
+async function readVisibleExtendedThinkingItems(page) {
+    try {
+        return await page.locator(EXTENDED_THINKING_OPTION_SELECTOR).evaluateAll(
+            (els, reData) => {
+                const re = new RegExp(reData.source, reData.flags);
+                return els.filter(el => {
+                    const rect = el.getBoundingClientRect();
+                    const style = getComputedStyle(el);
+                    const text = (el.innerText || el.textContent || '').trim();
+                    return rect.width > 0 && rect.height > 0
+                        && style.display !== 'none' && style.visibility !== 'hidden'
+                        && re.test(text);
+                }).map(el => ({
+                    text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' '),
+                    selected: el.classList.contains('selected')
+                        || !!el.querySelector('.selected, [aria-label*="已選取"], [aria-label*="Selected"]'),
+                    ariaSelected: el.getAttribute('aria-selected') || '',
+                    ariaChecked: el.getAttribute('aria-checked') || '',
+                }));
+            },
+            { source: EXTENDED_THINKING_RE.source, flags: EXTENDED_THINKING_RE.flags }
+        );
+    } catch (_) { return []; }
+}
+
+async function readVisibleGeminiMenuState(page) {
+    const [models, extended] = await Promise.all([
+        readVisibleGeminiModelMenuItems(page),
+        readVisibleExtendedThinkingItems(page),
+    ]);
+    return [...models, ...extended];
+}
+
+async function findVisibleExtendedThinkingOption(page) {
+    const locator = page.locator(EXTENDED_THINKING_OPTION_SELECTOR).filter({
+        hasText: EXTENDED_THINKING_RE,
+    });
+    const count = await locator.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+        const candidate = locator.nth(index);
+        if (await candidate.isVisible({ timeout: 300 }).catch(() => false)) return candidate;
     }
-    return false;
+    return null;
 }
 
-// ── v10: menu-opened detection (the "effect" in verify-by-effect) ────────────
-
-async function overlayChildCount(page) {
+async function ensureExtendedThinkingInOpenMenu(page, log) {
+    const state = await readVisibleGeminiMenuState(page);
+    const extended = state.find(item => isExtendedThinkingText(item && item.text));
+    if (!extended) {
+        log('gemini WARN: Extended Thinking item not found in verified model menu.');
+        return false;
+    }
+    if (isSelectedGeminiModelItem(extended)) {
+        log('gemini: Extended Thinking already selected.');
+        return true;
+    }
+    const option = await findVisibleExtendedThinkingOption(page);
+    if (!option) {
+        log('gemini WARN: Extended Thinking item not found for selection.');
+        return false;
+    }
     try {
-        return await page.evaluate((sel) => {
-            const c = document.querySelector(sel);
-            return c ? c.children.length : 0;
-        }, L.STATIC.overlayContainer);
-    } catch (_) { return 0; }
-}
-
-async function countFilledMenuItems(page) {
-    try {
-        return await page.evaluate((itemSel) => {
-            let n = 0;
-            for (const el of document.querySelectorAll(itemSel)) {
-                if ((el.innerText || '').trim().length > 0) n++;
-            }
-            return n;
-        }, L.STATIC.menuItem);
-    } catch (_) { return 0; }
+        await option.click({ timeout: 3000 });
+        log('gemini: selected Extended Thinking.');
+        return true;
+    } catch (_) {
+        log('gemini WARN: Extended Thinking item not clickable.');
+        return false;
+    }
 }
 
 /**
- * Did a menu actually open after the click?
- * Accept on: menu container visible, OR >=2 menu items with text, OR the CDK
- * overlay grew AND at least one item rendered (overlay growth alone can be a
- * tooltip).
+ * Return the structured model menu only after the Gemini-specific mode options
+ * render. Generic uploads/settings menus deliberately return null.
  */
-async function menuOpened(page, prevOverlayCount, timeoutMs = 2500) {
+async function waitForGeminiModelMenu(page, timeoutMs = 2500) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-        const containerVis = await page.locator(L.STATIC.menuContainer).first()
-            .isVisible({ timeout: 200 }).catch(() => false);
-        if (containerVis) return true;
-
-        const filled = await countFilledMenuItems(page);
-        if (filled >= 2) return true;
-
-        if (prevOverlayCount != null) {
-            const now = await overlayChildCount(page);
-            if (now > prevOverlayCount && filled >= 1) return true;
-        }
+        const items = await readVisibleGeminiModelMenuItems(page);
+        if (isGeminiModelMenuItems(items)) return items;
         await page.waitForTimeout(200);
     }
-    return false;
+    return null;
 }
 
 // ── v10: L3 heuristic scan (shadow-piercing, multi-candidate, durable ids) ──
@@ -459,7 +601,6 @@ async function openModelMenu(page, log, opts = {}) {
         const label = await readAria(page, sel);
         if (label && label.length < 30 && NON_MODEL_RE.test(label)) continue;
 
-        const before = await overlayChildCount(page);
         clicks++;
         try {
             await loc.click({ timeout: 3000 });
@@ -468,19 +609,26 @@ async function openModelMenu(page, log, opts = {}) {
             continue;
         }
 
-        if (await menuOpened(page, before)) {
-            log(`gemini: model menu opened via ${tier} "${sel}"`);
-            // Persist the verified winner. L3's data-fs tag is ephemeral —
-            // cache the durable descriptor instead (or nothing).
+        const menuItems = await waitForGeminiModelMenu(page);
+        if (menuItems) {
+            log(`gemini: verified model menu opened via ${tier} "${sel}"`);
+            // Persist only a selector that produced Gemini-specific mode
+            // options. L3's data-fs tag is ephemeral — cache its durable form.
             const durableSel = durable
                 || (tier === 'L1-locale' || tier === 'L2-structural' ? sel : null);
             if (durableSel) {
-                saveCache({ modelButton: { sel: durableSel, tier, verifiedAt: Date.now() } });
+                saveCache({ modelButton: {
+                    sel: durableSel,
+                    tier,
+                    kind: MODEL_BUTTON_CACHE_KIND,
+                    version: MODEL_BUTTON_CACHE_VERSION,
+                    verifiedAt: Date.now(),
+                } });
             }
             return { sel };
         }
 
-        log(`gemini: ${tier} candidate "${sel}" clicked but no menu opened — next`);
+        log(`gemini: ${tier} candidate "${sel}" clicked but no Gemini model menu opened — next`);
         if (tier === 'L0-cache') dropCache('modelButton');
         await page.keyboard.press('Escape').catch(() => {});
         await page.waitForTimeout(300);
@@ -499,9 +647,12 @@ async function peekModelButtonAria(page) {
     const sels = [];
     const cached = loadCache().modelButton;
     if (cached && cached.sel) sels.push(cached.sel);
-    sels.push(modelBtnSelector(), ...MODEL_BTN_CANDIDATES);
+    // Only known model-button selectors belong here. Never append broad L2/L3
+    // candidates: Upload tools has aria-haspopup and was previously misread as
+    // the selected model, poisoning the Flash and Pro idempotency checks.
+    sels.push(GEMINI_MODE_BUTTON_SELECTOR, modelBtnSelector());
 
-    for (const sel of sels) {
+    for (const sel of [...new Set(sels)]) {
         try {
             const loc = page.locator(sel).first();
             const vis = await loc.isVisible({ timeout: 300 }).catch(() => false);
@@ -574,15 +725,9 @@ async function dumpButtonDiagnostics(page, log) {
     }
 }
 
-// Helper: wait for menu items to have actual text content (Angular CDK overlay fix)
+// Helper: wait for Gemini mode items to have actual text content (Angular CDK overlay fix)
 async function waitForMenuItemsFilled(page, timeoutMs = 5000) {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-        const count = await countFilledMenuItems(page);
-        if (count >= 2) return true;
-        await page.waitForTimeout(200);
-    }
-    return false;
+    return !!(await waitForGeminiModelMenu(page, timeoutMs));
 }
 
 /** v9→v10 factored: infer UI locale from the model button's aria/text.
@@ -591,11 +736,7 @@ async function waitForMenuItemsFilled(page, timeoutMs = 5000) {
  *  v10: added 延伸 (new zh-TW wording) alongside 延長. */
 function inferLocaleFromAria(aria) {
     if (!aria || aria === 'UNKNOWN') return null;
-    if (/開啟|挑選|延長|延伸/.test(aria)) return 'zh_TW';
-    if (/打开|选择|扩展/.test(aria)) return 'zh_CN';
-    if (/Model selector|Extended/i.test(aria)) return 'en';
-    if (/モデル|拡張/.test(aria)) return 'ja';
-    return null;
+    return L.inferLocaleFromButtonText(aria);
 }
 
 function maybeCorrectLocale(aria, log) {
@@ -648,7 +789,7 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
             currentAria = peek.aria;
             log(`gemini attempt ${attempt}: current mode = "${currentAria}"`);
             maybeCorrectLocale(currentAria, log);
-            if (includesExtended(currentAria)) {
+            if (isProExtendedAria(currentAria)) {
                 log('gemini: Pro Extended Thinking already active');
                 return true;
             }
@@ -674,7 +815,7 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
             currentAria = (await readAria(page, mbs)) || 'UNKNOWN';
             log(`gemini attempt ${attempt}: current mode = "${currentAria}"`);
             maybeCorrectLocale(currentAria, log);
-            if (includesExtended(currentAria)) {
+            if (isProExtendedAria(currentAria)) {
                 log('gemini: Pro Extended Thinking already active');
                 await page.keyboard.press('Escape').catch(() => {});
                 return true;
@@ -814,13 +955,23 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
         await page.locator(L.STATIC.overlayBackdrop).waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
         await page.waitForTimeout(1000);
 
-        // Verify via aria-label (authoritative source), shadow-safe.
+        // Verify via aria-label (authoritative source), shadow-safe. The
+        // wording now overlaps with Flash Extended, so require BOTH Pro
+        // identity and Extended Thinking rather than merely matching "延伸".
         // Prefer the cached DURABLE selector: an L3 data-fs tag may not survive
         // Angular re-renders after the model switch.
-        const _vExt = asRe(L.txt('modelVerify'));
         const cachedSel = (loadCache().modelButton || {}).sel;
         const verifySel = cachedSel || mbs;
-        const isActive = await waitAriaMatches(page, verifySel, _vExt, 5000);
+        const verifyDeadline = Date.now() + 5_000;
+        let isActive = false;
+        while (Date.now() < verifyDeadline) {
+            const verifyAria = await readAria(page, verifySel);
+            if (isProExtendedAria(verifyAria)) {
+                isActive = true;
+                break;
+            }
+            await page.waitForTimeout(250);
+        }
 
         if (isActive) {
             log('gemini: Verified Pro Extended Thinking active.');
@@ -835,12 +986,13 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
 }
 
 /**
- * Switch Gemini to Flash model with standard thinking (free tier).
- * Used as fallback when Pro Extended is unavailable (no subscription).
+ * Switch Gemini to the exact default: 3.6 Flash + Extended Thinking.
+ * Used as the default model and as the verified fallback when Pro Extended
+ * is unavailable. Both independently selected menu rows are required.
  *
  * @param {Page} page — Playwright page on gemini.google.com
  * @param {(msg: string) => void} [onLog] — log callback
- * @returns {Promise<boolean>} true if Flash model is active
+ * @returns {Promise<boolean>} true only when 3.6 Flash and Extended Thinking are active
  */
 async function ensureFlash(page, onLog) {
     const log = onLog || (() => {});
@@ -854,17 +1006,11 @@ async function ensureFlash(page, onLog) {
 
     await waitForAppReady(page, log);
 
-    // Idempotency peek
+    // The composer only reports generic "Flash" / "Pro" text, which cannot
+    // distinguish 3.6 Flash from Flash-Lite. Always open the verified model
+    // menu and inspect its selected item before accepting the default target.
     const peek = await peekModelButtonAria(page);
-    let currentAria = 'UNKNOWN';
-    if (peek) {
-        currentAria = peek.aria;
-        maybeCorrectLocale(currentAria, log);
-        if (currentAria.includes('Flash')) {
-            log('gemini: Flash model already active');
-            return true;
-        }
-    }
+    if (peek) maybeCorrectLocale(peek.aria, log);
 
     // Step 1: open the model menu (verify-by-effect discovery)
     const opened = await openModelMenu(page, log);
@@ -872,7 +1018,6 @@ async function ensureFlash(page, onLog) {
         log('gemini WARN: Model selector button not found for Flash switch (cache→L1→L2→L3 exhausted).');
         return false;
     }
-    const mbs = opened.sel;
 
     if (!(await waitForMenuItemsFilled(page))) {
         log('gemini WARN: Menu items never filled for Flash switch.');
@@ -880,68 +1025,77 @@ async function ensureFlash(page, onLog) {
         return false;
     }
 
-    if (!peek) {
-        currentAria = (await readAria(page, mbs)) || 'UNKNOWN';
-        maybeCorrectLocale(currentAria, log);
-        if (currentAria.includes('Flash')) {
-            log('gemini: Flash model already active');
-            await page.keyboard.press('Escape').catch(() => {});
-            return true;
-        }
-    }
-
-    // Step 2: Find and click Flash (prefer "3.5 Flash" over "3.1 Flash-Lite")
-    const flashIdx = await page.evaluate((itemSel) => {
-        const items = document.querySelectorAll(itemSel);
-        // First pass: look for "Flash" without "Lite"
-        for (let i = 0; i < items.length; i++) {
-            const t = items[i].innerText || '';
-            if (t.includes('Flash') && !t.includes('Lite') && !t.includes('极速')) return i;
-        }
-        // Second pass: accept Flash-Lite as fallback
-        for (let i = 0; i < items.length; i++) {
-            const t = items[i].innerText || '';
-            if (t.includes('Flash') && !t.includes('Pro')) return i;
-        }
-        return -1;
-    }, L.STATIC.menuItem);
-
-    if (flashIdx < 0) {
-        log('gemini WARN: Flash menu item not found.');
+    // Step 2: Select the exact latest full Flash model — do NOT fall back to
+    // Flash-Lite or any generic Flash item. The product contract is 3.6 Flash.
+    const menuItems = await readVisibleGeminiModelMenuItems(page);
+    const target = menuItems.find(item => isDefaultFlashText(item.text));
+    if (!target || !target.dataModeId) {
+        log(`gemini WARN: target model "${DEFAULT_FLASH_MODEL.displayName}" not found in verified model menu.`);
         await page.keyboard.press('Escape');
         return false;
     }
 
     try {
-        await page.locator(L.STATIC.menuItem).nth(flashIdx).click();
-        log('gemini: selected Flash model');
+        await page.locator(`[data-mode-id="${target.dataModeId}"]`).first().click({ timeout: 3000 });
+        log(`gemini: selected target model "${DEFAULT_FLASH_MODEL.displayName}"`);
     } catch {
-        log('gemini WARN: Flash menu item not clickable.');
+        log(`gemini WARN: target model "${DEFAULT_FLASH_MODEL.displayName}" not clickable.`);
         await page.keyboard.press('Escape');
         return false;
     }
 
-    // Step 3: settle + close any residual overlay
-    await page.waitForTimeout(1500);
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(500);
+    // Step 3: Reopen the verified model menu and ensure Extended Thinking is
+    // enabled for 3.6 Flash. Google exposes this as an independent selected
+    // menu row; selecting the model alone is not the default-mode contract.
+    await page.waitForTimeout(750);
+    const thinkingMenu = await openModelMenu(page, log, { budgetMs: 12_000, maxClicks: 3 });
+    if (!thinkingMenu) {
+        log(`gemini WARN: could not reopen model menu to enable Extended Thinking for "${DEFAULT_FLASH_MODEL.displayName}".`);
+        return false;
+    }
+    if (!(await ensureExtendedThinkingInOpenMenu(page, log))) {
+        await page.keyboard.press('Escape').catch(() => {});
+        return false;
+    }
+    await page.keyboard.press('Escape').catch(() => {});
 
-    // Verify Flash is active (shadow-safe poll, durable selector preferred)
-    const cachedSel = (loadCache().modelButton || {}).sel;
-    const verifySel = cachedSel || mbs;
-    const flashActive = await waitAriaMatches(page, verifySel, /Flash/i, 4000);
-    const finalAria = (await readAria(page, verifySel)) || 'UNKNOWN';
-
-    if (flashActive) {
-        log(`gemini: Verified Flash model active (${finalAria}).`);
-        return true;
+    // Step 4: Reopen the verified menu and poll the TWO independent selected
+    // states. Composer aria "Flash 延伸思考" is useful diagnostics but cannot
+    // prove the exact 3.6 model; inspect the checked rows themselves.
+    await page.waitForTimeout(750);
+    // Reopen verification can spend up to the selector candidate wait budget
+    // on a cold Angular toolbar, so do not give it a shorter outer deadline.
+    const verifyDeadline = Date.now() + 12_000;
+    let lastState = [];
+    while (Date.now() < verifyDeadline) {
+        const verificationMenu = await openModelMenu(page, log, { budgetMs: 10_000, maxClicks: 3 });
+        if (!verificationMenu) break;
+        lastState = await readVisibleGeminiMenuState(page);
+        await page.keyboard.press('Escape').catch(() => {});
+        if (isDefaultFlashExtendedMenuState(lastState)) {
+            log(`gemini: verified default state "${DEFAULT_FLASH_MODEL.displayName}" + Extended Thinking.`);
+            return true;
+        }
+        await page.waitForTimeout(350);
     }
 
-    log(`gemini: Flash switch not confirmed. Current: "${finalAria}"`);
+    const selectedText = selectedGeminiModelText(lastState);
+    const extendedSelected = lastState.some(item => isSelectedGeminiModelItem(item)
+        && isExtendedThinkingText(item && item.text));
+    log(`gemini: default state not confirmed. Model="${selectedText || 'UNKNOWN'}", Extended=${extendedSelected}.`);
     return false;
 }
 
 module.exports = {
+    DEFAULT_FLASH_MODEL,
+    isDefaultFlashText,
+    isDefaultFlashItem,
+    isExtendedThinkingText,
+    isDefaultFlashExtendedMenuState,
+    isGeminiModelMenuItems,
+    isProExtendedAria,
+    isSelectedGeminiModelItem,
+    selectedGeminiModelText,
     ensureProExtended,
     ensureFlash,
     waitForMenuItemsFilled,

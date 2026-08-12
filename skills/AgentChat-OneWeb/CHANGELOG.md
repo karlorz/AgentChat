@@ -1,5 +1,31 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-08-12 (v34) — Gemini 默认严格锁定 3.6 Flash + 延伸思考
+- **[P0] 双状态默认契约 (`geminiModelSwitch.js`)**: 2026-08 Gemini 菜单将模型和思考模式拆成独立行；默认 `AGENTCHAT_GEMINI_MODEL=flash` 现仅在实际菜单同时勾选 **`3.6 Flash`** 与 **`延伸思考`** 后才发送 prompt。泛型 composer aria「Flash 延伸思考」仅作诊断，不能代替两条已选菜单项的验证
+- **[P0] 选择与复验**: 精确选中 `data-mode-id` 对应的 `3.6 Flash` 后，重新打开已经过结构证明的 Gemini 模式菜单，选择延伸思考；再次复开菜单并轮询两项 `.selected` 状态。任一项找不到、不可点或未确认 → `ERR_MODEL_DEGRADED`，正常 fallback，不会在 Pro、Flash-Lite 或标准思考下误报成功
+- **[P1] Pro 幂等性修正**: 所有模型现可使用延伸思考，故 Pro 早期判定从「aria 含延伸」改为「aria 同时含 Pro 和延伸」；`Flash 延伸思考` 不再被误认成 `Pro Extended`
+- **[test] 双状态回归**: 新增 `3.6 Flash + 延伸思考` 成功、缺失延伸失败、`Pro + 延伸` 失败及 Flash Extended 不等于 Pro Extended 的单元契约；live CDP 复验确认实际菜单中 `3.6 Flash` 和 `延伸思考` 均为 `.selected`
+
+## 2026-08-12 (v33) — Gemini 默认严格锁定 3.6 Flash（后由 v34 双状态契约取代）
+- **[P0] 默认 Flash 精确模型契约 (`geminiModelSwitch.js`)**: `AGENTCHAT_GEMINI_MODEL` 未设或为 `flash` 时，Gemini 必须选择并在重新打开的模型菜单中验证勾选 **`3.6 Flash`**；不再将任意含「Flash」的按钮 aria 当成成功，也绝不降级到 `3.5 Flash-Lite`、`3.1 Pro` 或复用 tab 的既有模型
+- **[P0] 缓存投毒修复**: 旧 `openModelMenu()` 把「任意含两个文本项的 overlay」当作模型菜单；Upload tools（`上載同工具`）因此被缓存为 `modelButton`，随后 Flash 切换在上传菜单找不到 Flash 后按 lenient policy 在 **3.1 Pro** 下继续回答。现菜单必须含至少两个可见 Gemini mode-option 结构（`data-mode-id` / `bard-mode-option-*`）才会被接受或写缓存；v2 cache schema 自动丢弃所有旧缓存项
+- **[P0] 选择态验证**: 切换后不再依赖 composer 的泛型「Flash」文案（无法区分 3.6 与 Flash-Lite）；重新打开已验证模型菜单，读取 `.selected` mode item，并只接受文本精确匹配 `3.6 Flash`
+- **[P1] 真诚失败策略**: 默认 3.6 Flash 无法选择或验证时抛 `ERR_MODEL_DEGRADED`，交由正常 fallback chain 继续；不再有 `policy=lenient` 下以页面当前 Pro / Flash-Lite 冒充成功的路径。Pro opt-in 不可用时也只降级到 v34 要求的已验证 **3.6 Flash + 延伸思考**
+- **[test] 新增 `test_gemini_model_switch.js`**: 覆盖 3.6 精确目标匹配、Flash-Lite/Pro 排除、Gemini mode-menu 与 Upload tools overlay 区分，以及 `.selected` 选择态判定
+
+## 2026-08-12 (v32) — Gemini 模型策略翻转 + Pro Extended 鲁棒性
+- **[P0] 模型策略翻转 (`adapters/gemini.js` preInputHook)**: Gemini 默认从 Pro Extended Thinking 改为 **Flash 模型**（免费 tier、速度快）。Pro Extended 通过 `AGENTCHAT_GEMINI_MODEL=pro` 显式启用（需订阅、3-5 分钟深度推理）。此前每次 Gemini 调用都先尝试 Pro Extended，订阅不可用或 UI 漂移时浪费 ~20s 模型切换预算后才降级到 Flash；现默认路径直接 `ensureFlash()`，零 Pro 尝试开销
+- **[P0] Pro Extended 预算提升 (`adapters/gemini.js` + `index.js`)**: Pro Extended + 网页搜索可耗时 3-5 分钟，默认 180s per-provider 预算在思考阶段耗尽 → 空回复/超时 → 降级到 ChatGPT。新增 `providerTimeoutOverride` 配置字段，`AGENTCHAT_GEMINI_MODEL=pro` 时提升到 360s；`index.js` 的 `perProvTimeout` 计算读取此覆盖。Flash 保持 180s 默认
+- **[P0] 提取阶段 grace re-read (`adapters/gemini.js` postResponseHook)**: 搜索→回答间隙（搜索卡片折叠后、正文开始流式前）可导致稳定性轮询误判"完成"，提取到搜索状态文本 → `validateResponseComplete` 判 `search_only` → 返回空 → "Response too short or empty"。现 `postResponseHook` 在验证失败时执行有界 grace re-read（30s 内每 3s 重读响应元素），捕获延迟到达的正文文本；仅触发于当前失败路径，不影响成功提取
+- **[P1] Pre-gen streak 上限提升 (`adapters/gemini.js` looksLikePreGeneration)**: `MAX_PREGEN_STREAK=8`（~16s）对 Pro Extended 思考阶段过低——仅产出 thinking 状态文本 60-180s 时提前耗尽 streak → 误判完成 → 空提取。Pro 模式下提升到 90（~180s），匹配提升后的预算；Flash 保持 8
+- **[P1] locale 检测修复 (`geminiModelSwitch.js` + `locales/gemini.js`)**: Google 2026-08 将 zh-TW 按钮从「開啟模式挑選器」改为「開模式選擇器，目前係 <模型>」，旧检测正则只认「開啟|挑選」→ 误判 locale=en → Pro 项匹配 `Advanced` 失败（菜单实际是「3.1 Pro 進階數學和程式碼」）。新增 `開模式|選擇器|目前係|目前為` 等标记；启发式关键字补 `3.1`/`3.6`
+- **[docs] SKILL.md + .env.example**: 更新 Gemini 特殊处理段（Flash 默认、Pro opt-in）、设计决策、Provider 差异表；.env.example 新增 `AGENTCHAT_GEMINI_MODEL` 配置项
+- **不变量（v34 已取代）**: receipt 字段、exit code 集合和 CLI flags 不变；默认模型选择曾要求已验证的 `3.6 Flash`，v34 进一步要求同时验证 `延伸思考`；不再支持 `AGENTCHAT_GEMINI_MODEL_POLICY=strict/lenient` 的任意既有模型继续路径。
+- **验证证据**:
+  - **Superseded**: “Flash 默认 … 返回” was a false-positive validation: the model selector cache had been poisoned with the Upload tools button, selection failed, and lenient mode continued under the active **3.1 Pro** tab. v33 replaced this with a selected-menu-item proof for `3.6 Flash`; v34 additionally requires the separately selected Extended Thinking row.
+  - Pro Extended: `AGENTCHAT_GEMINI_MODEL=pro --from=Gemini` 搜索 prompt → `gemini: Pro Extended Thinking active` → 118s 返回（locale 修复后 3.1 Pro + 延伸思考激活成功）
+  - 回归套件: `node test/run.js` → 6 ran, 1 failed (pre-existing kimi hold cap drift, unrelated), 1 skipped
+
 ## 2026-08-12 (v31) — 跨目录 .env 查找 + 可操作加载诊断
 - **[P0] 跨目录 .env 查找 (`skills/lib/cdp.js` v16 → v31)**: skill-only 部署 (`~/.agents/skills/`、`~/.claude/skills/`) 下，v16 的 `__dirname/../../.env` 解析到不存在的 `~/.agents/.env`，`process.cwd()/.env` 取决于调用方工程 — `AGENTCHAT_DISABLED`、`CHROME_PROFILE`、`PROXY_SERVER` 等关键环境变量全部静默回退到默认值，Qwen 绕过 `AGENTCHAT_DISABLED=qwen` 重新入链 → auth@auth_check 失败 + 3 分钟预算空烧。现查找顺序（命中即停）:
   1. `$AGENTCHAT_ENV_FILE`（强制覆盖，已存在）

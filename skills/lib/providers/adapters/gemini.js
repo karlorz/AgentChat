@@ -2,10 +2,10 @@
  * Gemini provider adapter config.
  *
  * Key differences from standard pipeline:
- *   - Pro Extended Thinking activation (preInputHook), v10: Pro→Flash→DEFAULT
- *     (lenient policy — selector drift in the model picker degrades the model
- *     choice instead of failing the provider; AGENTCHAT_GEMINI_MODEL_POLICY=strict
- *     restores the old hard-fail)
+ *   - Pro Extended Thinking activation (preInputHook), v34: Pro→verified
+ *     3.6 Flash + Extended Thinking fallback; the default path requires the
+ *     independently verified 3.6 Flash and Extended Thinking menu selections
+ *     and fails honestly rather than sending under a stale tab selection
  *   - Bursty output detection (stillGeneratingCheck) — resets stability clock
  *     when Pro Extended pauses mid-reasoning for 6s+
  *   - Action Toolbar completion anchor — Copy/Good-response buttons = definitive "done"
@@ -23,6 +23,7 @@
  * Dependencies: lib/geminiModelSwitch.js (ensureProExtended), lib/providerFactory.js (input helpers)
  */
 
+const { IN_PAGE_TEXT_WITH_MATH } = require('../../providerFactory');
 const { ensureProExtended, ensureFlash } = require('../../geminiModelSwitch');
 const { log: _tlog } = require('../../terminal');
 
@@ -30,6 +31,9 @@ const { log: _tlog } = require('../../terminal');
 // so the old `logFn || (() => {})` default silently swallowed every model
 // activation log line, making Pro/Flash switching impossible to debug.
 const glog = (msg) => _tlog('gemini', msg);
+const getModelChoice = () => String(process.env.AGENTCHAT_GEMINI_MODEL || 'flash')
+    .trim().toLowerCase();
+const isProChoice = () => getModelChoice() === 'pro';
 
 // ── Helpers (replicated from OneWeb for self-contained adapter) ──
 
@@ -51,6 +55,8 @@ const STILL_WORKING_UI = [
     '[class*="pause-generat"]',
 ];
 
+const REFUSAL_RE = /(?:I\s+can'?t\s+help|I'?m\s+(?:sorry.{0,40})?unable\s+to|against\s+(?:my\s+|our\s+)?polic(?:y|ies)|I\s+cannot\s+fulfill|violates?\s+.{0,30}safety\s+guidelines|我(?:无法|不能)(?:帮助|协助|提供))/i;
+
 /** Check if the page UI indicates generation is still in progress */
 async function isStillGenerating(page) {
     for (const sel of STILL_WORKING_UI) {
@@ -68,7 +74,10 @@ async function isStillGenerating(page) {
 // punctuation. Without this guard, `stillGeneratingCheck` keeps returning true,
 // resetting the stability clock every cycle until the full Gemini budget burns out.
 let _preGenStreak = 0;
-const MAX_PREGEN_STREAK = 8; // ~16s at default 2s poll interval
+// v32: Pro Extended thinking can produce only thinking-status text for 60-180s.
+// The default 8-poll (~16s) cap would prematurely declare "done" mid-thinking.
+// Raise to 90 polls (~180s) when Pro mode is active, matching the raised budget.
+const MAX_PREGEN_STREAK = isProChoice() ? 90 : 8;
 
 function looksLikePreGeneration(text) {
     const trimmed = (text || '').trim();
@@ -94,6 +103,27 @@ function validateResponseComplete(text) {
         return { ok: false, reason: 'thinking_only' };
     }
     return { ok: true };
+}
+
+function assertNotRefusal(text) {
+    const head = text.slice(0, 200);
+    if (text.length < 600 && REFUSAL_RE.test(head)) {
+        throw Object.assign(
+            new Error('Gemini safety filter rejected prompt'),
+            { code: 'ERR_SAFETY_REJECTED' }
+        );
+    }
+}
+
+/**
+ * Read the latest response with the factory's KaTeX/MathJax → LaTeX text
+ * shape, so grace re-reads are evaluated by the same completion rules.
+ */
+async function readResponseText(page) {
+    return page.locator(RESPONSE_SELECTOR).last()
+        .evaluate(IN_PAGE_TEXT_WITH_MATH)
+        .then(text => text.trim())
+        .catch(() => '');
 }
 
 // ── Response container selectors ────────────────────────────────────────────
@@ -217,6 +247,11 @@ module.exports = {
     url: 'https://gemini.google.com/u/0/app',
     authDomains: ['accounts.google.com'],
 
+    // v32: Pro Extended thinking + web search can take 3-5 min. The default
+    // per-provider budget (180s) is exhausted mid-thinking → empty reply.
+    // Raise to 360s when Pro mode is active; Flash stays at the default.
+    providerTimeoutOverride: isProChoice() ? 360_000 : undefined,
+
     // Post-nav URL allow-list — replaces the imperative ERR_WRONG_PAGE check
     // that lived in preInputHook (where it classified as generic 'error' →
     // exit 9 / all_exhausted). Anything NOT on gemini.google.com after nav
@@ -249,7 +284,7 @@ module.exports = {
         /已達到.*(?:上限|限額|限制)/i,
     ],
 
-    // ── Pre-input: tiered model activation (Pro Extended → Flash → fail) ──
+    // ── Pre-input: model activation (Flash default; Pro Extended opt-in) ──
     preInputHook: async (page, cfg, logFn) => {
         const log = logFn || glog;
         // Per-run reset: _preGenStreak is module-level state. In a long-lived
@@ -260,43 +295,39 @@ module.exports = {
         // (URL validation moved to the factory's Step-2 auth check via
         //  blockedUrlPatterns — a wrong page is now 'auth', not 'error'.)
 
-        // Tier 1: Try Pro Extended Thinking (requires Gemini Pro subscription)
-        let ok = await ensureProExtended(page, 1, log);
-        if (ok) {
-            log('gemini: Pro Extended Thinking active (Pro subscription)');
+        // v32: Flash is the DEFAULT model (free tier, faster). Pro Extended
+        // Thinking is opt-in via AGENTCHAT_GEMINI_MODEL=pro (requires
+        // subscription, 3-5 min generation for complex prompts).
+        const modelChoice = getModelChoice();
+        const usingPro = modelChoice === 'pro';
+
+        if (usingPro) {
+            // Pro path: try Pro Extended first, then the verified default:
+            // exact 3.6 Flash plus Extended Thinking. We never substitute
+            // Flash-Lite or an arbitrary active model.
+            if (await ensureProExtended(page, 1, log)) {
+                log('gemini: Pro Extended Thinking active (Pro subscription)');
+                return;
+            }
+            log('gemini: Pro Extended unavailable, falling back to verified 3.6 Flash...');
+        }
+
+        // Flash path (default): exact 3.6 Flash + Extended Thinking only.
+        // A model-picker failure must not silently send under an existing
+        // Pro or Flash-Lite selection on a reused tab.
+        if (await ensureFlash(page, log)) {
+            log(`gemini: 3.6 Flash + Extended Thinking active (${usingPro ? 'Pro fallback' : 'default'})`);
             return;
         }
 
-        // Tier 2: Pro Extended failed — fall back to Flash model (free tier)
-        log('gemini: Pro Extended unavailable, falling back to Flash (free tier)...');
-        ok = await ensureFlash(page, log);
-        if (ok) {
-            log('gemini: Flash model active (free tier fallback)');
-            return;
-        }
-
-        // Tier 3: both switchers failed.
-        //
-        // v10 POLICY FIX (the actual "one-time" fix for the recurring Gemini
-        // outages): model PINNING failure is not model UNAVAILABILITY. If the
-        // selector drifts, the page still has a fully working Gemini with its
-        // default model — throwing here threw away a valid Gemini answer and
-        // cascaded the whole call to ChatGPT every time Google touched the
-        // model picker. Default is now to WARN and proceed on the page's
-        // current/default model; diagnostics for the picker were already
-        // dumped by geminiModelSwitch. Opt back into the old hard-fail with
-        //   AGENTCHAT_GEMINI_MODEL_POLICY=strict
-        // (for callers that MUST have Pro Extended, e.g. benchmark runs).
-        const policy = String(process.env.AGENTCHAT_GEMINI_MODEL_POLICY || 'lenient')
-            .trim().toLowerCase();
-        if (policy === 'strict') {
-            throw Object.assign(
-                new Error('Gemini model activation failed — Pro Extended and Flash both unavailable (policy=strict)'),
-                { code: 'ERR_MODEL_DEGRADED' }
-            );
-        }
-        log('gemini WARN: model activation failed — proceeding with the page\'s '
-            + 'DEFAULT model (policy=lenient). Set AGENTCHAT_GEMINI_MODEL_POLICY=strict to fail instead.');
+        // Exact requested model could not be verified. Failing cleanly lets
+        // OneWeb's normal provider chain continue, instead of returning a
+        // misleading Gemini answer produced by whichever model was already on
+        // the page.
+        throw Object.assign(
+            new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=3.6 Flash + Extended Thinking`),
+            { code: 'ERR_MODEL_DEGRADED' }
+        );
     },
 
     // ── Editor ──
@@ -485,18 +516,35 @@ module.exports = {
         // response as ERR_SAFETY_REJECTED. Real refusals are SHORT and state the
         // refusal UP FRONT, so: (a) only inspect the first 200 chars, (b) require
         // the total response to be short, (c) anchor phrases to first person.
-        const head = text.slice(0, 200);
-        const REFUSAL_RE = /(?:I\s+can'?t\s+help|I'?m\s+(?:sorry.{0,40})?unable\s+to|against\s+(?:my\s+|our\s+)?polic(?:y|ies)|I\s+cannot\s+fulfill|violates?\s+.{0,30}safety\s+guidelines|我(?:无法|不能)(?:帮助|协助|提供))/i;
-        if (text.length < 600 && REFUSAL_RE.test(head)) {
-            throw Object.assign(
-                new Error('Gemini safety filter rejected prompt'),
-                { code: 'ERR_SAFETY_REJECTED' }
-            );
-        }
+        assertNotRefusal(text);
 
         const validation = validateResponseComplete(text);
         if (!validation.ok) {
-            return ''; // fails minResponseLength → factory returns error
+            // v32: Grace re-read — the search→answer gap can cause premature
+            // stability declaration. The stability poller saw search-status
+            // text ("搜索网页", "N 个结果") that passed its checks, but the
+            // actual answer hadn't started streaming yet. Wait up to 30s for
+            // real answer text to appear, re-reading every 3s.
+            //
+            // This only triggers when the initial extraction is search-only,
+            // thinking-only, or too-short — i.e. the current failure path that
+            // returns '' and causes a fallback. The 30s grace is bounded and
+            // only adds latency to the recovery path (which already failed).
+            const GRACE_MS = 30_000;
+            const POLL_MS = 3_000;
+            const deadline = Date.now() + GRACE_MS;
+            while (Date.now() < deadline) {
+                await page.waitForTimeout(POLL_MS);
+                const retext = await readResponseText(page);
+                const reval = validateResponseComplete(retext);
+                if (reval.ok) {
+                    // Got real answer text — run dual-draft + safety checks
+                    const finalText = (await extractFirstDraft(page, retext)) || retext;
+                    assertNotRefusal(finalText);
+                    return finalText;
+                }
+            }
+            return ''; // still empty after grace → factory classifies as extract error
         }
 
         return text;
