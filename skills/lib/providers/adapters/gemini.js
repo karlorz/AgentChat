@@ -23,7 +23,7 @@
  * Dependencies: lib/geminiModelSwitch.js (ensureProExtended), lib/providerFactory.js (input helpers)
  */
 
-const { IN_PAGE_TEXT_WITH_MATH } = require('../../providerFactory');
+const { IN_PAGE_TEXT_WITH_MATH, effectiveMinResponseLength } = require('../../providerFactory');
 const { ensureProExtended, ensureFlash } = require('../../geminiModelSwitch');
 const { log: _tlog } = require('../../terminal');
 
@@ -92,14 +92,6 @@ function looksLikePreGeneration(text) {
     }
     _preGenStreak = 0;
     return false;
-}
-
-function effectiveMinResponseLength(prompt, configured = 10) {
-    const base = Number.isFinite(configured) ? configured : 10;
-    const plen = typeof prompt === 'string'
-        ? prompt.replace(/\s+/g, ' ').trim().length : 0;
-    if (plen <= 24) return Math.max(3, Math.min(base, Math.ceil(plen / 3)));
-    return base;
 }
 
 function validateResponseComplete(text, prompt) {

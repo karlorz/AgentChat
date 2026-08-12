@@ -883,10 +883,10 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
             // stream the answer late), so the gate must outlast the typical
             // render delay — capped by the remaining budget, never the old
             // fixed 15s that let slow renders fall through to the stale
-            // `.last()` fallback mid-answer.
-            const gateWait = Math.min(perWait, 60_000);
+            // `.last()` fallback mid-answer. (perWait is already ≤ selTimeout
+            // ≤ 60s, so no extra cap is needed.)
             const freshGate = await page.locator(sel).nth(baseline[sel])
-                .waitFor({ state: 'attached', timeout: gateWait })
+                .waitFor({ state: 'attached', timeout: perWait })
                 .then(() => true)
                 .catch(() => false);
             if (freshGate) {
@@ -1161,20 +1161,33 @@ async function collectResponseImages(responseEl, config) {
     }, { scopeSel, minPx });
 }
 
+/**
+ * Effective minimum response length, scaled by prompt length.
+ * A genuinely short answer ("今天是星期三。") to a short prompt must not be
+ * rejected by a fixed 10-char floor. Terse prompts (≤12 chars: "2+2=?",
+ * "What's 2+2?") can be answered completely in ONE character ("4", "晴") —
+ * any non-empty text is a valid answer there; the echo/stale guards reject
+ * wrong-element reads, so the gate's only job in that band is rejecting the
+ * empty container. Longer prompts scale toward the configured base
+ * (default 10). (The original formula's max(3,…) floor was dead weight:
+ * ceil(plen/3) ≥ 3 already for every prompt ≥ 7 chars, and it wrongly
+ * rejected field-observed 1-char answers like Kimi's "4" to "2+2=?". v35.)
+ * Shared by extractResponse and gemini.js's validateResponseComplete — both
+ * gates must judge by the same rule (the factory's gate is binding).
+ */
+function effectiveMinResponseLength(prompt, configured = 10) {
+    const base = Number.isFinite(configured) ? configured : 10;
+    const plen = typeof prompt === 'string'
+        ? prompt.replace(/\s+/g, ' ').trim().length : 0;
+    if (plen <= 12) return 1;
+    return Math.min(base, Math.ceil(plen / 3));
+}
+
 async function extractResponse(page, responseEl, config, prompt, baselineText) {
     let text = (await responseEl.evaluate(IN_PAGE_TEXT_WITH_MATH)).trim();
 
-    // v34: a genuinely short answer ("今天是星期三。") to a short prompt must
-    // not be rejected by the fixed 10-char floor. Scale the minimum by prompt
-    // length — 3 chars floor, 10 chars for prompts longer than 24 chars.
-    const effectiveMinLen = (() => {
-        const base = Number.isFinite(config.minResponseLength)
-            ? config.minResponseLength : 10;
-        const plen = typeof prompt === 'string'
-            ? prompt.replace(/\s+/g, ' ').trim().length : 0;
-        if (plen <= 24) return Math.max(3, Math.min(base, Math.ceil(plen / 3)));
-        return base;
-    })();
+    // v34: see effectiveMinResponseLength — the gate scales with prompt length.
+    const effectiveMinLen = effectiveMinResponseLength(prompt, config.minResponseLength);
 
     // v13: capture image URLs BEFORE the text-length gate — a pure-image
     // response ("here's your picture", no prose) previously died right here
@@ -1225,18 +1238,21 @@ async function extractResponse(page, responseEl, config, prompt, baselineText) {
         // question is the one acceptable miss — re-asking yields the same text.)
         if (baselineText && typeof baselineText === 'object') {
             const staleMatch = Object.values(baselineText).some(prev =>
-                typeof prev === 'string' && prev.length > 0 && prev === norm(text)
+                typeof prev === 'string' && prev.length > 0 && prev === nt
             );
             if (staleMatch) {
-                flog(config.key, `stale-guard: extracted text equals the pre-send response snapshot — refusing old-turn answer (len=${norm(text).length})`);
+                flog(config.key, `stale-guard: extracted text equals the pre-send response snapshot — refusing old-turn answer (len=${nt.length})`);
                 return null;
             }
         }
     }
 
-    // Post-response hook (e.g. Claude thinking filter)
+    // Post-response hook (e.g. Claude thinking filter). The real prompt is
+    // passed through as cfg.prompt so hook implementations (gemini's
+    // validateResponseComplete) can judge the answer against the question —
+    // adapters never set cfg.prompt themselves.
     if (hasText && config.postResponseHook) {
-        text = await config.postResponseHook(page, text, config);
+        text = await config.postResponseHook(page, text, { ...config, prompt });
     }
 
     const finalTextOk = !!(text && text.length >= effectiveMinLen);
@@ -1795,18 +1811,17 @@ function createProviderRunner(cfg) {
         // text identical to this snapshot instead.
         const baselineCounts = {};
         const baselineText = {};
-        await Promise.all(C.responseSelectors.map(sel =>
-            page.locator(sel).count()
-                .then(n => {
-                    baselineCounts[sel] = n;
-                    if (n > 0) {
-                        return page.locator(sel).last().evaluate(IN_PAGE_TEXT_WITH_MATH)
-                            .then(t => { baselineText[sel] = String(t || '').trim(); })
-                            .catch(() => {});
-                    }
-                })
-                .catch(() => { /* guard disabled for this selector */ })
-        ));
+        await Promise.all(C.responseSelectors.map(async sel => {
+            const n = await page.locator(sel).count()
+                .catch(() => null);
+            if (n === null) return; // guard disabled for this selector
+            baselineCounts[sel] = n;
+            if (n > 0) {
+                const t = await page.locator(sel).last()
+                    .evaluate(IN_PAGE_TEXT_WITH_MATH).catch(() => '');
+                baselineText[sel] = String(t || '').trim();
+            }
+        }));
 
         // ── Step 7: Send ── (stage label fixed: was mislabeled WAIT_RESPONSE)
         try {
@@ -1948,6 +1963,8 @@ module.exports = {
     clickSend,
     waitForCompletion,
     extractResponse,
+    // Shared response-length gate (also used by gemini.js's validator).
+    effectiveMinResponseLength,
     // Shared in-page extractor for adapters that need the factory's text shape.
     IN_PAGE_TEXT_WITH_MATH,
     // Shared patterns — avoid duplicating common CN quota/dismiss regexes

@@ -19,7 +19,7 @@
  */
 
 const { COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
-const { makeStillWorkingCheck, cleanKimiMetaText } = require('../../stillWorking');
+const { makeStillWorkingCheck } = require('../../stillWorking');
 
 // v20: safe stderr logger — replaces the try{require('../../terminal')}catch
 // boilerplate that had been copy-pasted at every log site in this adapter.
@@ -28,6 +28,36 @@ try {
     const { log: _tlog } = require('../../terminal');
     klog = (msg) => { try { _tlog('kimi', msg); } catch (_) {} };
 } catch (_) { /* logger unavailable — stay silent */ }
+
+// ── v34: answer/toolcall container selectors (single source of truth) ──────
+// Kimi renders thinking traces, search status, tool-call steps (class
+// *toolcall*) and the final answer as SIBLING blocks inside the segment.
+// These two classes drive BOTH the adapter's responseSelectors (extract the
+// answer-only container) and the shared probe's S3d tool-phase hold (while
+// toolcall blocks are live and the answer container is still empty,
+// generation is not done).
+const KIMI_ANSWER_SEL =
+    '[class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])';
+const KIMI_TOOLCALL_SEL = '[class*="markdown-container"][class*="toolcall"]';
+
+// ── v34: post-answer footer sanitizer ───────────────────────────────────────
+// Defensive text pass: the structural fix (answer-only container) is
+// primary; this only removes discrete post-answer footer lines, never the
+// answer text itself.
+const KIMI_UPGRADE_NOTICE_RE = /High demand\..*$/m;
+const KIMI_REFERENCE_RE = /^\s*(?:Reference|參考資料|参考来源)\s*$/m;
+
+/** Strip Kimi's post-answer upgrade/reference footer noise from a response. */
+function cleanKimiMetaText(text) {
+    if (!text) return '';
+    return String(text)
+        // Post-answer upgrade/upsell notice ("High demand. Switched to …").
+        .replace(KIMI_UPGRADE_NOTICE_RE, '')
+        // "Reference" footer heading (source chips follow it on later lines).
+        .replace(KIMI_REFERENCE_RE, '')
+        .split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+        .trim();
+}
 
 // ── v12: Fast mode selector for Kimi ─────────────────────────────────────────
 // Kimi's model selector lets users pick between models (快速模式 / 深入思考 /
@@ -291,16 +321,16 @@ const RESPONSE_SELECTORS = [
     // is wanted: extracting the whole segment (or a tool-call step) polluted
     // the response with "Think…", "Search <q> N results" and the upgrade
     // notice.
-    '[class*="segment-assistant"] [class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])',
-    '[class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])',
+    `[class*="segment-assistant"] ${KIMI_ANSWER_SEL}`,
+    KIMI_ANSWER_SEL,
     '[class*="chat-content-item-assistant"]',
     '[class*="segment-content"]',
     '[class*="chat-content-list"] [class*="assistant"]',
     // v34: last-resort fallback for the agentic tool phase — when the tool
     // steps finish but the final answer never renders in its own container,
     // the accumulated tool-call output is the best content available.
-    '[class*="segment-assistant"] [class*="toolcall"]',
-    '[class*="toolcall"]',
+    `[class*="segment-assistant"] ${KIMI_TOOLCALL_SEL}`,
+    KIMI_TOOLCALL_SEL,
     // v10: all three above anchor on the chat-content/segment naming
     // family — one rename kills them together. Generic tails are only
     // reached when the specific ones fail (budget-clamped upstream).
@@ -400,6 +430,8 @@ module.exports = {
 
     // v19: exported for tests (factory ignores unknown keys)
     _ensureKimiDeepThinkOff: ensureKimiDeepThinkOff,
+    // v34: sanitizer exported for tests (factory ignores unknown keys)
+    _cleanKimiMetaText: cleanKimiMetaText,
 
     editorSelectors: [
         '.chat-input-editor',
@@ -459,15 +491,16 @@ module.exports = {
     // with the fetch-phase verbs (获取/抓取/阅读/浏览/…) and "N 个网页"
     // count lines in the vocabulary. False positives are bounded by
     // stillGeneratingMaxHoldMs below instead of burning the budget.
-    // v11: shared multi-signal detector (stillWorking.js) with a Kimi-specific
-    // sanitizer: Kimi renders thinking traces + search status + the final
-    // answer inside the SAME container, and the status lines ("Think",
-    // "Search <q> N results") match textLooksBusy — they held the completion
-    // clock open for up to stillGeneratingMaxHoldMs (90s) AFTER the real
-    // answer was already visible on the page.
+    // v34: the check judges the ANSWER-only container (answerSelector) and
+    // holds the clock through the agentic tool phase while toolcall blocks
+    // are live and the answer container is still empty (toolcallSelector).
+    // Post-answer footer noise ("High demand…", "Reference") never matches
+    // the busy vocabulary, so no text sanitizer feeds the check anymore —
+    // the postResponseHook applies it to the extracted answer instead.
     stillGeneratingCheck: makeStillWorkingCheck({
         responseSelectors: RESPONSE_SELECTORS,
-        cleanText: cleanKimiMetaText,
+        answerSelector: KIMI_ANSWER_SEL,
+        toolcallSelector: KIMI_TOOLCALL_SEL,
     }),
 
     // Multi-round search legitimately alternates fetch-silence and text
