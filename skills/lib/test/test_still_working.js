@@ -24,7 +24,7 @@ const AGENTCHAT_ROOT = require("path").resolve(__dirname, "..", "..", "..");
 const path = require('path');
 const fs = require('fs');
 
-const { textLooksBusy, makeStillWorkingCheck } =
+const { textLooksBusy, makeStillWorkingCheck, cleanKimiMetaText } =
     require(AGENTCHAT_ROOT + '/skills/lib/stillWorking');
 const { waitForCompletion, extractResponse } =
     require(AGENTCHAT_ROOT + '/skills/lib/providerFactory');
@@ -215,12 +215,46 @@ await0(async () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+console.log('\nT8: Kimi meta-text sanitizer (thinking/search/upgrade footer)');
+{
+    const raw = '搜尋最新恆生指數漲跌資訊以供回覆    用戶詢問恆生指數今天的漲跌情況，需要用繁體中文一句話回答。我需要先搜尋最新的恆生指數資訊。  Search 恆生指數 2026年8月12日 漲跌  8 results   Think    根據搜尋結果，2026年8月12日恆生指數收盤下跌0.83%，報25,440.17點。用戶要求用繁體中文一句話回答。    恆生指數今天（2026年8月12日）收跌0.83%，報25,440.17點。         High demand. Switched to K2.6 Instant for speed. Upgrade to use K2.6 Thinking.                             Reference';
+    const cleaned = cleanKimiMetaText(raw);
+    assert('kimi sanitizer keeps the final answer', cleaned.includes('恆生指數今天（2026年8月12日）收跌0.83%'));
+    assert('kimi sanitizer strips upgrade notice', !/High demand|Switched to K2/.test(cleaned));
+    assert('kimi sanitizer strips Reference footer', !/Reference/.test(cleaned));
+    assert('kimi sanitizer preserves plain answers', cleanKimiMetaText('恆生指數今天收跌0.83%。') === '恆生指數今天收跌0.83%。');
+    assert('kimi sanitizer strips multi-line footer', cleanKimiMetaText('第一行答案。\nHigh demand. Switched to K2.6 Instant for speed. Upgrade to use K2.6 Thinking.\nReference\n') === '第一行答案。');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+console.log('\nT9: stillWorkingCheck applies cleanText to polled + probe text');
+await0(async () => {
+    const check = makeStillWorkingCheck({
+        responseSelectors: ['[class*="assistant"]'],
+        cleanText: cleanKimiMetaText,
+    });
+    // S1: polled text whose ONLY busy line is the upgrade footer → clean ⇒ not busy
+    const page = { evaluate: async () => ({ uiBusy: false, tail: '' }) };
+    assert('S1 clean: busy footer alone does not hold the clock',
+        await check(page, { text: '答案是 42。\nHigh demand. Switched to K2.6 Instant for speed.' }) === false);
+    // S1: real status tail still busy AFTER cleaning → holds the clock
+    assert('S1 clean: genuine status tail still holds the clock',
+        await check(page, { text: '答案。\n正在获取网页...' }) === true);
+    // S3b: probe tail with upgrade footer does not hold the clock
+    const page2 = { evaluate: async () => ({ uiBusy: false, tail: '答案是 42。\nHigh demand. Switched to K2.6 Instant for speed.\nReference' }) };
+    assert('S3b clean: footer noise does not hold the clock',
+        await check(page2, { text: '答案是 42。' }) === false);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 console.log('\nT7: adapter wiring + overlay 登录 lookbehind');
 await0(async () => {
     const kimi = require(AGENTCHAT_ROOT + '/skills/lib/providers/adapters/kimi');
     assert('kimi check is the shared detector',
         typeof kimi.stillGeneratingCheck === 'function');
-    assert('kimi hold cap = 180s', kimi.stillGeneratingMaxHoldMs === 180_000);
+    // v24 perf fix reduced Kimi's cap from 180s to 90s (probe reflow budget);
+    // the adapter value is the shipped truth.
+    assert('kimi hold cap = 90s', kimi.stillGeneratingMaxHoldMs === 90_000);
     const { page } = makePage([''], { domProbe: 'reject' });
     assert('kimi check catches field tail #1',
         await kimi.stillGeneratingCheck(page, { text: '…\n正在获取网页...' }) === true);

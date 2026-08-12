@@ -40,6 +40,28 @@
 
 // ── Text-tail classifier (pure, unit-testable) ──────────────────────────────
 
+// Kimi renders thinking traces, search status and the final answer as
+// SIBLING blocks inside the segment (flat DOM). The structural fix (prefer
+// the answer-only .markdown-container in both the probe and the adapter's
+// responseSelectors) keeps the thinking/search text out of the completion
+// clock. This sanitizer is the defensive fallback for layouts where the
+// container splits are unavailable — it only removes discrete post-answer
+// footer lines, never the answer text itself.
+const KIMI_UPGRADE_NOTICE_RE = /High demand\..*$/m;
+const KIMI_REFERENCE_RE = /^\s*(?:Reference|參考資料|参考来源)\s*$/m;
+
+/** Strip Kimi's post-answer upgrade/reference footer noise from a response. */
+function cleanKimiMetaText(text) {
+    if (!text) return '';
+    return String(text)
+        // Post-answer upgrade/upsell notice ("High demand. Switched to …").
+        .replace(KIMI_UPGRADE_NOTICE_RE, '')
+        // "Reference" footer heading (source chips follow it on later lines).
+        .replace(KIMI_REFERENCE_RE, '')
+        .split('\n').map(s => s.trim()).filter(Boolean).join('\n')
+        .trim();
+}
+
 // Status chips are SHORT; real prose sentences are not. Only lines at or
 // under this length are eligible to be classified as a status.
 const STATUS_LINE_MAX = 48;
@@ -113,12 +135,46 @@ function _domProbe({ sels }) {
     };
 
     // Last response container, honoring the ADAPTER's own selector order —
-    // the probe must judge the same subtree family the factory polls.
+    // the probe must judge the same subtree family the factory polls. Kimi
+    // renders thinking traces, tool-call steps and the final answer as
+    // SIBLING blocks inside the segment; the status lines match
+    // textLooksBusy and held the completion clock open after the real answer
+    // rendered. When a markdown/answer container exists inside the host,
+    // judge THAT instead of the whole segment (the answer's own tail drives
+    // the clock).
     let host = null;
     for (const sel of sels || []) {
         let list;
         try { list = document.querySelectorAll(sel); } catch (_) { continue; }
         if (list && list.length) { host = list[list.length - 1]; break; }
+    }
+    // S3d — Kimi agentic tool phase: while the model is running tool calls,
+    // the answer container stays EMPTY and the intermediate reasoning is
+    // written into *toolcall* markdown blocks. The pre-answer text grows
+    // with every step, so a live toolcall block means generation is still in
+    // progress — hold the clock until the real answer renders (or the step
+    // text stops growing for good, bounded by stillGeneratingMaxHoldMs).
+    let toolPhaseBusy = false;
+    if (host) {
+        try {
+            const tc = host.querySelector(
+                '[class*="markdown-container"][class*="toolcall"]'
+            );
+            if (tc && (tc.textContent || '').trim().length > 0) {
+                const answer = host.querySelector(
+                    '[class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])'
+                );
+                if (!answer || !(answer.textContent || '').trim()) {
+                    toolPhaseBusy = true;
+                }
+            }
+        } catch (_) { /* best-effort */ }
+        if (!toolPhaseBusy) {
+            const inner = host.querySelector(
+                '[class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])'
+            );
+            if (inner) host = inner;
+        }
     }
 
     // PERF FIX (2026-07): narrowed from 'button, [role="button"]' (scanned
@@ -166,7 +222,7 @@ function _domProbe({ sels }) {
     // matching (textLooksBusy), so false positives are bounded by the
     // factory's stillGeneratingMaxHoldMs cap.
     const text = host ? (host.textContent || '') : '';
-    return { uiBusy, tail: String(text).slice(-1500) };
+    return { uiBusy: uiBusy || toolPhaseBusy, toolPhaseBusy, tail: String(text).slice(-1500) };
 }
 
 /**
@@ -183,12 +239,14 @@ function makeStillWorkingCheck(opts = {}) {
     const sels = Array.isArray(opts.responseSelectors)
         ? opts.responseSelectors.slice()
         : [];
+    const cleanText = typeof opts.cleanText === 'function' ? opts.cleanText : null;
     return async function stillWorkingCheck(page, info) {
         // S1 — zero-cost: classify the text the factory ALREADY read this
         // poll (perfectly aligned with the element driving the stability
         // clock). Factory v11 passes { text }; older callers pass nothing.
-        if (info && typeof info.text === 'string' && textLooksBusy(info.text)) {
-            return true;
+        if (info && typeof info.text === 'string') {
+            const judged = cleanText ? cleanText(info.text) : info.text;
+            if (textLooksBusy(judged)) return true;
         }
         // S2 + S3 — one CDP round-trip.
         let probe = null;
@@ -203,7 +261,8 @@ function makeStillWorkingCheck(opts = {}) {
         // sit OUTSIDE the factory-polled node; classify its tail too.
         if (typeof probe.tail === 'string' && probe.tail
             && probe.tail !== (info && info.text)) {
-            return textLooksBusy(probe.tail);
+            const judged = cleanText ? cleanText(probe.tail) : probe.tail;
+            return textLooksBusy(judged);
         }
         return false;
     };
@@ -212,6 +271,7 @@ function makeStillWorkingCheck(opts = {}) {
 module.exports = {
     textLooksBusy,
     makeStillWorkingCheck,
+    cleanKimiMetaText,
     // exported for tests / diagnostics
     STATUS_PATTERNS,
     STATUS_LINE_MAX,

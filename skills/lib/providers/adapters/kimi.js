@@ -19,7 +19,7 @@
  */
 
 const { COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
-const { makeStillWorkingCheck } = require('../../stillWorking');
+const { makeStillWorkingCheck, cleanKimiMetaText } = require('../../stillWorking');
 
 // v20: safe stderr logger — replaces the try{require('../../terminal')}catch
 // boilerplate that had been copy-pasted at every log site in this adapter.
@@ -285,9 +285,22 @@ async function ensureKimiDeepThinkOff(page) {
 // element — or nothing — whenever the factory had matched a fallback
 // selector, disabling the check exactly when the DOM had drifted.
 const RESPONSE_SELECTORS = [
+    // v34: prefer the answer-only container — Kimi renders thinking traces,
+    // tool-call steps (class *toolcall*), search status and the final answer
+    // as separate blocks inside the segment. Only the REAL answer container
+    // is wanted: extracting the whole segment (or a tool-call step) polluted
+    // the response with "Think…", "Search <q> N results" and the upgrade
+    // notice.
+    '[class*="segment-assistant"] [class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])',
+    '[class*="markdown-container"]:not([class*="toolcall"]):not([class*="tool-call"])',
     '[class*="chat-content-item-assistant"]',
     '[class*="segment-content"]',
     '[class*="chat-content-list"] [class*="assistant"]',
+    // v34: last-resort fallback for the agentic tool phase — when the tool
+    // steps finish but the final answer never renders in its own container,
+    // the accumulated tool-call output is the best content available.
+    '[class*="segment-assistant"] [class*="toolcall"]',
+    '[class*="toolcall"]',
     // v10: all three above anchor on the chat-content/segment naming
     // family — one rename kills them together. Generic tails are only
     // reached when the specific ones fail (budget-clamped upstream).
@@ -446,7 +459,16 @@ module.exports = {
     // with the fetch-phase verbs (获取/抓取/阅读/浏览/…) and "N 个网页"
     // count lines in the vocabulary. False positives are bounded by
     // stillGeneratingMaxHoldMs below instead of burning the budget.
-    stillGeneratingCheck: makeStillWorkingCheck({ responseSelectors: RESPONSE_SELECTORS }),
+    // v11: shared multi-signal detector (stillWorking.js) with a Kimi-specific
+    // sanitizer: Kimi renders thinking traces + search status + the final
+    // answer inside the SAME container, and the status lines ("Think",
+    // "Search <q> N results") match textLooksBusy — they held the completion
+    // clock open for up to stillGeneratingMaxHoldMs (90s) AFTER the real
+    // answer was already visible on the page.
+    stillGeneratingCheck: makeStillWorkingCheck({
+        responseSelectors: RESPONSE_SELECTORS,
+        cleanText: cleanKimiMetaText,
+    }),
 
     // Multi-round search legitimately alternates fetch-silence and text
     // bursts for minutes; the cap re-arms on every REAL text change, so it
@@ -464,6 +486,12 @@ module.exports = {
         if (text.length < 80 && /^(我来|让我|我将|我会|下面|以下|首先)/.test(text)) {
             return ''; // fails minResponseLength → factory returns error
         }
-        return text;
+        // Strip the thinking/search/upgrade/reference meta that Kimi renders
+        // inside the answer container, so callers get the clean final answer.
+        const cleaned = cleanKimiMetaText(text);
+        if (cleaned.length !== text.length) {
+            klog(`清理回答元信息 (${text.length} → ${cleaned.length} 字元)`);
+        }
+        return cleaned;
     },
 };
