@@ -126,6 +126,34 @@ Do NOT use for: interactive conversations that need multi-turn context (each pro
 
 ---
 
+## 配置加载 (.env 解析 — v31 跨目录支持)
+
+skill 启动时通过 `skills/lib/cdp.js` 内联的 `loadDotEnv()` 安全加载 `.env`（永不 shell-sourced；纯文本 KEY=VALUE 解析器）。查找顺序命中即停：
+
+| # | 路径 | 说明 |
+|---|------|------|
+| 1 | `$AGENTCHAT_ENV_FILE` | 强制覆盖（CI/测试） |
+| 2 | `$AGENTCHAT_HOME/.env` | 用户级目录覆盖 |
+| 3 | `$HOME/.agentchat/.env` | **用户级默认（推荐）** — 任意 cwd 都能命中 |
+| 4 | `<entry-point 向上爬，每级父目录 .env>` | 入口脚本所在目录到 `/` 的 12 级祖先链 |
+| 5 | `<__dirname>/../../.env` + `<process.cwd()>/.env` | legacy 兜底 |
+
+**跨目录使用**（任意 cwd 调用 `~/.agents/skills/.../index.js`）：
+
+```bash
+# 推荐：让 ~/.agentchat/.env 指向仓库 .env（一次性，所有终端/工具自动继承）
+mkdir -p ~/.agentchat
+ln -sf /path/to/AgentChat/.env ~/.agentchat/.env
+
+# 或：单次显式覆盖
+AGENTCHAT_ENV_FILE=/path/to/AgentChat/.env \
+  node ~/.agents/skills/AgentChat-WebSubAgent/index.js --search "..."
+```
+
+**未找到任何 .env 时**：stderr 立即输出 `[agentchat-env] NOT LOADED — 候选列表 + 3 修复选项`（不烧 provider 预算再失败）。成功时仅一行 `[agentchat-env] loaded <path>`，无密钥回显。
+
+---
+
 ## Fallback Chain (Priority Order)
 
 ```

@@ -1,5 +1,25 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-08-12 (v31) — 跨目录 .env 查找 + 可操作加载诊断
+- **[P0] 跨目录 .env 查找 (`skills/lib/cdp.js` v16 → v31)**: skill-only 部署 (`~/.agents/skills/`、`~/.claude/skills/`) 下，v16 的 `__dirname/../../.env` 解析到不存在的 `~/.agents/.env`，`process.cwd()/.env` 取决于调用方工程 — `AGENTCHAT_DISABLED`、`CHROME_PROFILE`、`PROXY_SERVER` 等关键环境变量全部静默回退到默认值，Qwen 绕过 `AGENTCHAT_DISABLED=qwen` 重新入链 → auth@auth_check 失败 + 3 分钟预算空烧。现查找顺序（命中即停）:
+  1. `$AGENTCHAT_ENV_FILE`（强制覆盖，已存在）
+  2. `$AGENTCHAT_HOME/.env`（用户级目录覆盖）
+  3. `$HOME/.agentchat/.env`（**用户级默认**，跨部署/跨工程推荐）
+  4. 入口脚本向上爬 12 级祖先目录的 `.env`（仓库布局自动命中根；部署布局在第 3 步或 null 终止）
+  5. `<__dirname>/../../.env` + `<process.cwd()>/.env`（legacy 兜底）
+- **[P1] 可操作加载诊断**: 第一次 `loadDotEnv()` 自动 emit 一行到 stderr —
+  - 成功: `[agentchat-env] loaded <abs path>`（无密钥回显）
+  - 失败: `[agentchat-env] NOT LOADED — none of the following paths exist:` + 完整候选列表 + 3 修复选项
+  - 通过 `_announced` 模块级 guard 防多次 announce；通过 `_loadedOnce/_loadedPath/_loadedCandidates` 缓存让任何重入为 O(1) 不重复 fs 探测
+  - **配置缺失立即可见，零 provider 预算消耗**（v16 行为：先烧 3 分钟再返回 exit 2）
+- **[docs] OneWeb + WebSubAgent SKILL.md + .env.example**: 新增/更新「配置加载」段，记录 5 步查找顺序表 + 跨目录使用方案 + NOT-LOADED 输出示例；Prerequisites 段去除已过时的 `setx` 指引（v18 临时方案，被用户级默认覆盖）
+- **不变量**: `process.env` wins（永远不覆盖已设变量）；receipt 字段不变；exit code 集合不变；`AGENTCHAT_ENV_FILE` 仍是第一位
+- **验证证据** (handoff 报告同款):
+  - `~/.agents/skills/AgentChat-WebSubAgent/index.js --smoke` 跨目录调用 → 65s 完成 3/4 provider
+  - `~/.agents/skills/AgentChat-WebSubAgent/index.js --search "Respond with exactly: PONG"` 跨目录 → 16.4s kimi 返回 PONG
+  - 仓库根 `--smoke` → 同结果，无回归
+  - `HOME=/nonexistent-homedir --doctor` → 完整候选列表 + 3 修复选项，无密钥回显
+
 ## 2026-07-19 (v18) — Windows CDP 端口不可达四联修
 - **[P0] Job Object 陪葬 (`lib/cdp.js` + `scripts/start-chrome.ps1`)**: agent 宿主的工具调用跑在 kill-on-close Job 里，Node `detached: true` 不设置 `CREATE_BREAKAWAY_FROM_JOB`，autostart/Start-Process 出来的 Chrome 在 skill 进程退出瞬间被连带杀掉——"回答完问题，下一轮 ERR_NO_CDP" 的直接成因。现: 内嵌启动器与 ps1 均经 WMI `Win32_Process.Create` 创建进程（父进程 WmiPrvSE.exe，位于任何调用方 Job 之外），同时拿到真实 PID 写入 PID 文件保持 `-Stop` 互操作；WMI 不可用时降级为 plain spawn 并显式告警
 - **[P0] Windows 单例吸收 (`launchChromeDirect`)**: Windows Chrome 单例是命名 mutex/消息窗口而非 `Singleton*` 文件——v16 的删文件解锁在 Windows 上是 no-op，同 profile 已有存活实例时新 chrome.exe 被吸收秒退、端口永不绑定、傻等 45s 后报泛化失败。现: 启动前经 CIM 扫描持有 `--user-data-dir=<profile>` 的 chrome/msedge/chromium 进程；命中且为 PID 文件记录的受管实例 → `taskkill /T /F` 回收后重启，他人实例 → 快速 loud-fail 并给出 PID 与三条处置指引（POLICY 不变: 绝不动用户自己的 Chrome）。`Singleton*` 文件清理收窄至 POSIX

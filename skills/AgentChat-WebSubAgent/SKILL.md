@@ -45,6 +45,16 @@ description: Sequential 6-step AI pipeline — Claude Code plans→Kimi searches
 
 例外: `--smoke`、`--doctor`，或用户明确要求"只检查环境不发送"
 
+## 配置加载（跨目录 — 共享 skills/lib/cdp.js，v31）
+
+本 skill 调 OneWeb 实际承担 provider 调用，但 `.env` 解析、Chain 优先级、AGENTCHAT_DISABLED 全链路在共享的 `cdp.js` 完成。
+
+**5 步查找顺序 + 跨目录使用 + NOT-LOADED 输出格式** 完整文档见 [AgentChat-OneWeb/SKILL.md 配置加载](../AgentChat-OneWeb/SKILL.md#配置加载-env-解析--v31-跨目录支持)。最常见的"任意 cwd 调用 ~/.agents/skills/.../index.js"场景一行搞定：
+
+```bash
+mkdir -p ~/.agentchat && ln -sf /path/to/AgentChat/.env ~/.agentchat/.env
+```
+
 ## 架构
 
 ```
