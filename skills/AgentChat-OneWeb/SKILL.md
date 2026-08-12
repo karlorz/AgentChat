@@ -224,9 +224,9 @@ Gemini 默认使用并**必须验证选中 `3.6 Flash` 及 `延伸思考`**（�
 #         默认 User Data 目录（Chrome ≥136 在其上静默禁用调试端口）。
 #    手动预启动（可选，完整 clone 下更快）：
 #    Linux/macOS:
-pgrep -f "start-chrome-debug" || bash scripts/start-chrome-debug.sh
-#    Windows (PowerShell；首次使用加 -FirstLogin 登录 Gemini):
-#      powershell -ExecutionPolicy Bypass -File scripts\start-chrome.ps1
+bash scripts/chrome-debug
+#    Windows (PowerShell；首次使用加 --first-login 登录 Gemini):
+#      scripts\run-helper.cmd chrome-debug --first-login
 #    WSL2 注意: WSL 内 127.0.0.1 是 VM 而非 Windows 宿主。Chrome 跑在
 #    Windows 侧时需设 CDP_HOST=<Windows 宿主 IP>（见 .env.example）。
 

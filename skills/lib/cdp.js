@@ -158,8 +158,8 @@ const CDP_URL = `http://${DEFAULT_CDP_HOST}:${DEFAULT_CDP_PORT}`;
 
 const AUTOSTART_WAIT_MS = 45_000;
 const AUTOSTART_POLL_MS = 1_000;
-// Same filename the ps1/daemon use — keeps `start-chrome.ps1 -Stop` able to
-// stop a Chrome the embedded launcher started (and vice versa).
+// PID file for the EMBEDDED fallback launcher only (v18 Windows reclaim).
+// The shared lifecycle engine uses validated ownership state instead.
 const CHROME_PID_FILE = path.join(os.tmpdir(), 'chrome-debug.chrome.pid');
 
 /** `~` / `~/x` → homedir. Anything else passes through untouched. */
@@ -175,19 +175,31 @@ function isWSL() {
     return process.platform === 'linux' && /microsoft/i.test(os.release());
 }
 
-/** First existing platform start script, searched across deployment layouts.
- *  AGENTCHAT_SCRIPTS_DIR, when set, is authoritative — no fallback guessing. */
+/** First existing lifecycle dispatch entry, searched across deployment
+ *  layouts. AGENTCHAT_SCRIPTS_DIR, when set, is authoritative — no fallback
+ *  guessing.
+ *
+ *  v32 (lifecycle consolidation): both platforms now target the single
+ *  shared engine through the Superpowers-style bridge:
+ *    - Windows: scripts/run-helper.cmd chrome-debug
+ *    - POSIX:   scripts/chrome-debug (extensionless helper)
+ *  Legacy `chrome-debug.sh` is accepted as a POSIX fallback for pre-v32
+ *  checkouts. Returns the helper invocation as { helper, platform } or null. */
 function findStartScript() {
-    const name = process.platform === 'win32' ? 'start-chrome.ps1' : 'start-chrome-debug.sh';
     const dirs = process.env.AGENTCHAT_SCRIPTS_DIR
         ? [process.env.AGENTCHAT_SCRIPTS_DIR]
         : [
             path.resolve(__dirname, '..', '..', 'scripts'),  // repo layout
             path.resolve(process.cwd(), 'scripts'),          // caller's project
         ];
+    const candidates = process.platform === 'win32'
+        ? ['run-helper.cmd']
+        : ['chrome-debug', 'chrome-debug.sh'];
     for (const d of dirs) {
-        const p = path.join(d, name);
-        try { if (fs.existsSync(p)) return p; } catch (_) {}
+        for (const want of candidates) {
+            const p = path.join(d, want);
+            try { if (fs.existsSync(p)) return { helper: p, platform: process.platform }; } catch (_) {}
+        }
     }
     return null;
 }
@@ -232,7 +244,8 @@ function findChromeBinary() {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-/** PID recorded by us / the ps1 in CHROME_PID_FILE, or null. */
+/** PID recorded by the embedded launcher only (v18 Windows reclaim).
+ *  The shared lifecycle engine uses validated ownership state instead. */
 function readManagedPid() {
     try {
         const n = parseInt(fs.readFileSync(CHROME_PID_FILE, 'utf8').trim(), 10);
@@ -345,7 +358,8 @@ function isProcessAlive(pid) {
     catch (e) { return e.code === 'EPERM'; }
 }
 
-/** Hardened flag set — parity with start-chrome.ps1 / start-chrome-debug.py.
+/** Hardened flag set — parity with the shared lifecycle engine
+ *  (scripts/lib/chrome-debug-lifecycle.cjs).
  *  SECURITY: no --remote-allow-origins=* and no --ignore-certificate-errors
  *  (both were removed repo-wide; see the scripts' comments). */
 function buildChromeArgs(port, profileDir) {
@@ -413,7 +427,7 @@ async function launchChromeDirect(port, log) {
                 return { ok: false, reason:
                     `a Chrome without a reachable CDP port on ${port} already holds this profile ` +
                     `(PID ${foreign.map(h => h.pid).join(', ')}) — a new instance would be absorbed by ` +
-                    "Chrome's singleton and exit immediately. Close it, run scripts\\start-chrome.ps1 -Stop, " +
+                    "Chrome's singleton and exit immediately. Close it, run scripts\\run-helper.cmd chrome-debug --stop, " +
                     'or point CHROME_PROFILE at a different directory.' };
             }
             // Only OUR recorded instance holds the profile without serving the
@@ -464,18 +478,17 @@ async function launchChromeDirect(port, log) {
 /** Per-platform "how to start Chrome debug" fix command. */
 function startHint() {
     if (process.platform === 'win32') {
-        return 'powershell -ExecutionPolicy Bypass -File scripts\\start-chrome.ps1' +
-               '   (first time: add -FirstLogin and sign in to Gemini)' +
+        return 'scripts\\run-helper.cmd chrome-debug   (first time: add --first-login and sign in to Gemini)' +
                ' — or just set CHROMIUM_PATH in .env; the skill can launch Chrome itself';
     }
     if (isWSL()) {
-        return 'bash scripts/start-chrome-debug.sh — OR, if Chrome runs on the ' +
+        return 'bash scripts/chrome-debug — OR, if Chrome runs on the ' +
                'Windows host: inside WSL2 127.0.0.1 is the VM, not Windows. ' +
-               'Start Chrome on Windows with scripts\\start-chrome.ps1, then set ' +
+               'Start Chrome on Windows with scripts\\run-helper.cmd chrome-debug, then set ' +
                'CDP_HOST to the Windows host IP (cat /etc/resolv.conf → nameserver) ' +
                'and add --remote-debugging-address=0.0.0.0 ONLY on trusted networks.';
     }
-    return 'bash scripts/start-chrome-debug.sh';
+    return 'bash scripts/chrome-debug';
 }
 
 /** One HTTP GET /json/version probe. Resolves true/false, never throws. */
@@ -544,29 +557,34 @@ async function ensureChromeCdp(cdpUrl, onLog) {
     const port = new URL(url).port || '9222';
     const reasons = [];
 
-    // ── Tier 1: deployed start script ──────────────────────────────────────
-    const script = findStartScript();
-    if (script) {
-        const isPs1 = script.endsWith('.ps1');
-        const cmd = isPs1 ? 'powershell.exe' : 'bash';
-        const argv = isPs1
-            ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script]
-            : [script];
-        log(`CDP port down — auto-starting via start script: ${script}`);
+    // ── Tier 1: deployed lifecycle helper (shared engine) ─────────────────
+    const found = findStartScript();
+    if (found) {
+        let cmd, argv;
+        if (found.platform === 'win32') {
+            cmd = 'cmd.exe';
+            argv = ['/d', '/c', found.helper, 'chrome-debug'];
+        } else {
+            cmd = 'bash';
+            argv = [found.helper];
+        }
+        // Daemon supervision is an explicit opt-in; the engine reads
+        // AGENTCHAT_CHROME_DAEMON=1 itself (same semantics as --daemon).
+        log(`CDP port down — auto-starting via lifecycle helper: ${found.helper}`);
         try {
-            const child = spawn(cmd, argv, { detached: true, stdio: 'ignore', cwd: path.dirname(path.dirname(script)) });
+            const child = spawn(cmd, argv, { detached: true, stdio: 'ignore', cwd: path.dirname(path.dirname(found.helper)) });
             child.on('error', () => {});
             child.unref();
             if (await waitForPort(url, log)) {
-                log('Chrome CDP is up (auto-started via script).');
+                log('Chrome CDP is up (auto-started via lifecycle helper).');
                 return { up: true, autostarted: true, method: 'script' };
             }
-            reasons.push('start script ran but port stayed down 45s');
+            reasons.push('lifecycle helper ran but port stayed down 45s');
         } catch (e) {
-            reasons.push(`script spawn failed: ${e.message}`);
+            reasons.push(`helper spawn failed: ${e.message}`);
         }
     } else {
-        reasons.push('no start script deployed (scripts/ not copied — normal under workbuddy/skill-only installs)');
+        reasons.push('no lifecycle helper deployed (scripts/ not copied — normal under workbuddy/skill-only installs)');
     }
 
     // ── Tier 2: embedded launcher ──────────────────────────────────────────

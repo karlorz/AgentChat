@@ -1,5 +1,12 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-08-13 (v35) — Chrome CDP 生命周期整合（共享引擎）
+- **[重构] 单一生命周期引擎 (`scripts/lib/chrome-debug-lifecycle.cjs` 新增)**: 旧的 Python Playwright daemon（`start-chrome-debug.py`，disconnect 即重启）已删除；`start-chrome-debug.sh` / `start-chrome.ps1` / `chrome-debug.sh` 变为兼容委托，全部转发到共享引擎。跨平台命令契约: `bash scripts/chrome-debug`（POSIX）或 `scripts\run-helper.cmd chrome-debug`（Windows，经 Git Bash）
+- **[行为] `lib/cdp.js` Tier-1 自动启动改走共享引擎**: `findStartScript()` 现返回 `run-helper.cmd`/`chrome-debug` 桥；默认一次性启动，仅 `AGENTCHAT_CHROME_DAEMON=1` 时追加 `--daemon`（显式 opt-in 监督模式）。内嵌启动器（Tier-2）保留为 skill-only 部署兜底
+- **[行为] 用户退出 Chrome 不再重启**: daemon 监督模式下仅异常退出（非零 exit/信号）触发有界指数退避重启（默认最多 5 次）；正常退出结束监督并清理 ownership 状态。`--stop`/`--restart` 只作用于经验证归属（PID + 启动身份 + 引擎命令行匹配）的监督者子树，不用 pkill/端口扫描
+- **[配置] `CHROME_PROFILE` > `CHROME_DEBUG_PROFILE`（兼容别名）；`CDP_PORT` > `CHROME_DEBUG_PORT`**；诊断（`--dry-run --json` / `--status`）报告配置来源
+- **[test] 新增 `test_chrome_debug_lifecycle.js`（29 断言）与 `test_chrome_debug_dispatch.js`（34 断言）**: 零依赖 fake-Chrome fixture（临时目录 + 可控 exit code）；覆盖桥接分发、配置优先级、一次性启动、daemon 正常退出不重启、异常退出有界重启、归属 stop、stale 状态安全 no-op、Windows 适配器静态契约。全套 `npm test` 9 ran / 0 failed
+
 ## 2026-08-12 (v34) — Gemini 默认严格锁定 3.6 Flash + 延伸思考
 - **[P0] 双状态默认契约 (`geminiModelSwitch.js`)**: 2026-08 Gemini 菜单将模型和思考模式拆成独立行；默认 `AGENTCHAT_GEMINI_MODEL=flash` 现仅在实际菜单同时勾选 **`3.6 Flash`** 与 **`延伸思考`** 后才发送 prompt。泛型 composer aria「Flash 延伸思考」仅作诊断，不能代替两条已选菜单项的验证
 - **[P0] 选择与复验**: 精确选中 `data-mode-id` 对应的 `3.6 Flash` 后，重新打开已经过结构证明的 Gemini 模式菜单，选择延伸思考；再次复开菜单并轮询两项 `.selected` 状态。任一项找不到、不可点或未确认 → `ERR_MODEL_DEGRADED`，正常 fallback，不会在 Pro、Flash-Lite 或标准思考下误报成功

@@ -20,8 +20,8 @@
  *     }
  *
  * 前提: Chrome CDP 必须在 9222 端口运行
- *       bash scripts/start-chrome-debug.sh (Linux)
- *       powershell .\scripts\start-chrome.ps1 (Windows)
+ *       bash scripts/chrome-debug (Linux/macOS)
+ *       scripts\run-helper.cmd chrome-debug (Windows)
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

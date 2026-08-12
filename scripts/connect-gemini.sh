@@ -2,7 +2,7 @@
 # ============================================================
 # connect-gemini.sh — 一键连接 Gemini (可移植版)
 #
-# Chrome 由 start-chrome-debug.sh (Playwright daemon) 管理。
+# Chrome 由共享生命周期引擎 (scripts/chrome-debug) 管理。
 # 本脚本负责验证 Gemini tab 状态，必要时创建/刷新。
 #
 # Environment variables:
@@ -21,14 +21,14 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ---- Auto-load .env (safe KEY=VALUE parser — NEVER `source` untrusted .env) ----
 # SECURITY FIX: this script previously did `set -a; source .env; set +a`,
 # re-opening the exact arbitrary-code-execution vector that
-# start-chrome-debug.sh's P0 fix (2026-06-29) was written to close.
+# chrome-debug's P0 fix (2026-06-29) was written to close.
 source "$SCRIPT_DIR/lib-env.sh"
 load_project_env "$PROJECT_DIR"
 
 # ---- Config (env vars override defaults) ----
 CDP_PORT="${CDP_PORT:-9222}"
 GEMINI_URL="${GEMINI_URL:-https://gemini.google.com/u/0/app}"
-START_SCRIPT="$SCRIPT_DIR/start-chrome-debug.sh"
+START_SCRIPT="$SCRIPT_DIR/chrome-debug"
 
 # ---- 1. 确保 Chrome 运行 ----
 echo "[1/3] Ensuring Chrome is running..."

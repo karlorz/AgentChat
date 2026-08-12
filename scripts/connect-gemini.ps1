@@ -14,7 +14,7 @@ try {
     Write-Host "       OK — CDP reachable"
 } catch {
     Write-Host "       Not running, starting..."
-    & "$PSScriptRoot\start-chrome.ps1"
+    & cmd.exe /d /c "`"$PSScriptRoot\run-helper.cmd`" chrome-debug"
     Start-Sleep -Seconds 5
 }
 

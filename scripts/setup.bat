@@ -30,8 +30,9 @@ REM ── 安装 Python 依赖 ────────────────
 echo   Installing Python dependencies...
 pip install playwright websocket-client -q 2>&1
 REM NOTE: "python -m playwright install chromium" removed - the Windows flow
-REM launches SYSTEM Chrome (start-chrome.ps1) and connects over CDP;
-REM connect_over_cdp needs no bundled browser, and the Linux daemon actively
+REM launches SYSTEM Chrome via the shared lifecycle engine (run-helper.cmd
+REM chrome-debug) and connects over CDP;
+REM connect_over_cdp needs no bundled browser, and the engine actively
 REM REJECTS Playwright Chromium (no login state). The download was ~300MB of
 REM dead weight.
 echo   OK
@@ -91,7 +92,8 @@ echo ========================================
 echo.
 echo   Next steps:
 echo     1. Edit .env if you need proxy settings
-echo     2. Run: powershell .\scripts\start-chrome.ps1 -FirstLogin
+echo     2. Run: scripts\run-helper.cmd chrome-debug --first-login
+echo         (需要 Git Bash — https://gitforwindows.org/)
 echo     3. Log in to Gemini in the Chrome window
 echo     4. Test: node skills\AgentChat-OneWeb\index.js --smoke
 echo.

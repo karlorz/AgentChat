@@ -51,7 +51,7 @@ npm install
 ```bash
 cp .env.example .env           # 按需修改代理地址
 bash scripts/setup.sh          # 环境检查
-bash scripts/start-chrome-debug.sh  # 启动 Chrome daemon
+bash scripts/chrome-debug      # 启动 Chrome（共享生命周期引擎，一次性启动）
 ```
 
 ### 3. 使用场景
@@ -104,9 +104,15 @@ AgentChat/
 ├── 1.png                                # 架构图
 ├── scripts/
 │   ├── setup.sh / setup.bat             # 环境一键检查
-│   ├── start-chrome-debug.sh            # Chrome CDP daemon（idempotent, Linux）
-│   ├── start-chrome-debug.py            # Python daemon v3 — 事件驱动 Chrome 生命周期管理
-│   ├── start-chrome.ps1                 # Windows PowerShell 启动
+│   ├── run-helper.cmd                   # 跨平台 helper 桥（Windows 找 Git Bash → 同一引擎）
+│   ├── chrome-debug                     # 共享 Chrome CDP 生命周期引擎入口（无扩展名 helper）
+│   ├── chrome-debug.sh                  # 兼容委托（转发到 chrome-debug）
+│   ├── lib/
+│   │   ├── chrome-debug-lifecycle.cjs   # 唯一生命周期引擎（配置/状态/监督/stop/restart）
+│   │   ├── posix-lifecycle-adapter.cjs  # POSIX 原语（setsid 分离、进程身份、owned-tree 终止）
+│   │   └── win32-lifecycle-adapter.cjs  # Windows 原语（WMI 脱离 Job、taskkill /T）
+│   ├── start-chrome-debug.sh            # 兼容委托（旧 daemon 入口 → 共享引擎）
+│   ├── start-chrome.ps1                 # 兼容委托（旧 PowerShell 入口 → run-helper.cmd）
 │   └── connect-gemini.sh / .ps1         # 一键连接 Gemini
 └── skills/
     ├── lib/                               # 🔗 共享库（零代码重复的核心）
@@ -165,7 +171,7 @@ AgentChat/
 |------|--------|------|
 | `CDP_PORT` | `9222` | Chrome DevTools Protocol 端口 |
 | `PROXY_SERVER` | `http://127.0.0.1:7897` | 代理地址（中国大陆**必须**） |
-| `CHROME_PROFILE` | `~/.chrome-debug-profile` | Chrome 持久化 Profile |
+| `CHROME_PROFILE` | 平台默认（macOS: `chrome-debug-profile-from-default` 克隆目录） | Chrome 持久化 Profile（canonical；`CHROME_DEBUG_PROFILE` 为兼容别名） |
 | `CHROMIUM_PATH` | 无（必须手动设置） | 系统 Chrome 可执行文件路径 |
 | `LOG_FILE` | `/tmp/chrome-debug.log` | 诊断日志 |
 
@@ -198,7 +204,7 @@ GFW 会阻断 Chrome 启动时向 Google 云端发起的 SSL 请求，导致 Chr
 
 **如果仍然 `about:blank`**：
 ```bash
-pkill -9 chrome && bash scripts/start-chrome-debug.sh
+bash scripts/chrome-debug --restart
 ```
 
 详见 `skills/AgentChat-OneWeb/SKILL.md` → 各 Provider 实现说明。
@@ -209,27 +215,38 @@ pkill -9 chrome && bash scripts/start-chrome-debug.sh
 
 | 症状 | 原因 | 修复 |
 |------|------|------|
-| Gemini tab `about:blank` | Chrome 3-layer fail-safe | `pkill -9 chrome && bash scripts/start-chrome-debug.sh` |
+| Gemini tab `about:blank` | Chrome 3-layer fail-safe | `bash scripts/chrome-debug --restart` |
 | `ERR_BLOCKED_BY_CLIENT` | Safe Browsing | 检查 flags 含 `--disable-features=OptimizationHints` |
 | SSL `net_error -100` | GFW RST 或 Reality TLS 冲突 | 用 HTTP/SOCKS5 代理，不用 VLESS Reality |
 | `MODULE_NOT_FOUND: playwright-core` | npm 依赖未安装 | 根目录 `npm install` |
 
-### 手动管理
+### Chrome CDP 生命周期管理（共享引擎）
+
+所有平台通过同一个命令契约：
 
 ```bash
-# 查看 daemon 状态
-curl -s http://127.0.0.1:9222/json/list | python3 -c "
-import json,sys
-[print(f'{p[\"title\"]} | {p[\"url\"]}') for p in json.load(sys.stdin) if p.get('type')=='page']
-"
+# 一次性启动（默认）：复用健康实例，或分离式启动一个 Chrome
+bash scripts/chrome-debug
+# Windows: scripts\run-helper.cmd chrome-debug
 
-# 查看日志
-cat /tmp/chrome-debug.log
+# 监督模式（显式 opt-in）：仅异常退出时按有界退避重启；
+# 用户正常退出 Chrome → 监督结束，绝不重启
+bash scripts/chrome-debug --daemon
 
-# 完全重启
-pkill -9 -f "start-chrome-debug.py" && pkill -9 chrome
-sleep 2 && bash scripts/start-chrome-debug.sh
+# 安全停止：只停止经验证归属的监督者及其 Chrome 子树
+bash scripts/chrome-debug --stop
+
+# 重启：先走归属停止，再全新启动（不用 pkill / 端口扫描杀进程）
+bash scripts/chrome-debug --restart
+
+# 状态与诊断（不改变任何进程）
+bash scripts/chrome-debug --status
+bash scripts/chrome-debug --dry-run --json     # 打印解析后的配置与来源
 ```
+
+配置优先级：`CHROME_PROFILE` > `CHROME_DEBUG_PROFILE`（兼容别名）；`CDP_PORT` > `CHROME_DEBUG_PORT` > `9222`。
+
+> 关闭 provider 客户端或 OneWeb 创建的 tab **不会**停止共享 Chrome 进程 —— CDP 客户端断开只是断开连接。只有 `--stop` 会停止经验证归属的浏览器。
 </details>
 
 ---

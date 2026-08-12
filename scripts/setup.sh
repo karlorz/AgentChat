@@ -128,7 +128,7 @@ CDP_PORT="${CDP_PORT:-9222}"
 
 check "Chrome CDP 端口 ${CDP_PORT}" \
     "curl -s http://127.0.0.1:${CDP_PORT}/json/version > /dev/null" \
-    "bash scripts/start-chrome-debug.sh"
+    "bash scripts/chrome-debug"
 
 check "Gemini 可达 (通过代理)" \
     "curl -s --connect-timeout 5 --proxy '$PROXY' https://gemini.google.com -o /dev/null -w '%{http_code}' | grep -q 200"
@@ -153,7 +153,7 @@ fi
 
 echo ""
 echo "✅ 环境就绪! 运行以下命令启动:"
-echo "   bash scripts/start-chrome-debug.sh"
+echo "   bash scripts/chrome-debug"
 echo "   bash scripts/connect-gemini.sh"
 echo ""
 echo "   # 或直接使用 AI skills:"

@@ -15,10 +15,11 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { spawn } = require('child_process');
 
 // 会话上下文管理器 — 多轮对话降级时自动传递历史给 fallback Provider
 const { getContext, addTurn, generateSummary, clearSession, getSessionData } = require('./lib/session_context');
+// 共享 CDP 生命周期 — demo 服务器不再拥有独立的 Chrome 启动逻辑
+const cdp = require('../skills/lib/cdp.js');
 
 const PORT = 3456;
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -60,93 +61,18 @@ function cdpCheck() {
     });
 }
 
-function launchChrome() {
-    console.log('[demo] 正在启动 Chrome...');
-
-    // 必须非默认目录 — Chrome 禁止在系统 User Data 下开启远程调试
-    const plat = process.platform;
-    const profileDir = path.join(
-        process.env.USERPROFILE || process.env.HOME || '/tmp',
-        '.chrome-debug-profile'
-    );
-    try { require('fs').mkdirSync(profileDir, { recursive: true }); } catch (_) {}
-
-    // 清除可能残留的锁文件
-    ['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'Lockfile'].forEach(f => {
-        try { require('fs').unlinkSync(path.join(profileDir, f)); } catch (_) {}
-    });
-
-    let cmd;
-    if (plat === 'win32') {
-        cmd = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
-        const alt = process.env.LOCALAPPDATA + '\\Google\\Chrome\\Application\\chrome.exe';
-        if (!require('fs').existsSync(cmd) && require('fs').existsSync(alt)) cmd = alt;
-    } else if (plat === 'darwin') {
-        cmd = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    } else {
-        cmd = 'google-chrome-stable';
-    }
-
-    args = [
-        `--remote-debugging-port=${CDP_PORT}`,
-        '--remote-debugging-address=127.0.0.1',
-        '--remote-allow-origins=*',
-        `--user-data-dir=${profileDir}`,
-        '--disable-features=OptimizationHints,Translate,HttpsUpgrades',
-        '--disable-background-networking',
-        '--disable-client-side-phishing-detection',
-        '--disable-field-trial-config',
-        '--disable-component-update',
-        '--disable-sync',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--ignore-certificate-errors',
-        'about:blank',                    // 暖启动：开一个空白 tab 让 Chrome 初始化完成
-    ];
-
-    console.log(`[demo]   ${cmd}`);
-    const child = spawn(cmd, args, {
-        stdio: ['ignore', 'ignore', 'pipe'],  // capture stderr for error diagnosis
-        detached: true,
-    });
-    child.stderr.on('data', (d) => {
-        const msg = d.toString().trim();
-        if (msg) console.log(`[demo] [chrome stderr] ${msg.substring(0, 300)}`);
-    });
-    child.on('error', (err) => {
-        console.log(`[demo] ❌ Chrome 启动失败: ${err.message}`);
-    });
-    child.unref();
-}
-
 async function ensureCdp(timeoutMs = 30000) {
-    const start = Date.now();
-    const first = await cdpCheck();
-    if (first.ok) {
+    // 委托给共享 CDP 模块：它按需通过共享生命周期引擎（run-helper.cmd /
+    // chrome-debug）启动 Chrome，必要时回退到内置启动器；绝不注册
+    // 重启 watcher，也不写独立的进程/ownership 状态。
+    const log = (m) => console.log(`[demo] ${m}`);
+    const result = await cdp.ensureChromeCdp(CDP_URL, log);
+    if (result.up) {
         console.log('[demo] Chrome CDP 已就绪');
         return true;
     }
-
-    // 没在运行 — 启动 Chrome
-    console.log('[demo] Chrome CDP 未运行，自动启动...');
-    launchChrome();
-
-    // 等待 CDP 就绪
-    while (Date.now() - start < timeoutMs) {
-        await new Promise((r) => setTimeout(r, 1000));
-        const result = await cdpCheck();
-        if (result.ok) {
-            console.log('[demo] Chrome CDP 启动完成!');
-
-            // 不立即清理 about:blank tab — Windows 下 Chrome 只有一个 tab
-            // 时关闭它会导致 Chrome 进程退出。WebExtended 的 tab 冲突检测
-            // 已用 --ephemeral-tab 规避，不需要这个 hack。
-            // await cleanupBlankTabs();
-            return true;
-        }
-        process.stdout.write('.');
-    }
-    console.log('\n[demo] ⚠️  Chrome CDP 启动超时 — 部分功能可能不可用');
+    console.log('\n[demo] ⚠️  Chrome CDP 启动失败或超时 — 部分功能可能不可用');
+    if (result.reason) console.log(`[demo] 原因: ${result.reason}`);
     return false;
 }
 
