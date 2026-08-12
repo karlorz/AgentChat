@@ -52,16 +52,81 @@ const path = require('path');
 const fs = require('fs');
 const { spawn, execSync, execFileSync } = require('child_process');
 
-// ── .env loading (v16) ──────────────────────────────────────────────────────
+// ── .env loading (v16 + v31 cross-directory) ─────────────────────────────
 // Safe line parser — NEVER shell-sourced (see the 2026-06-29 P0 on the bash
 // side: `source .env` was an arbitrary-code-execution vector). Values are
 // plain strings; $(...), backticks, $VAR stay literal. process.env wins.
+//
+// v31 (cross-directory): the v16 3-candidate lookup only resolved the repo's
+// `.env` when the skill ran from inside the repo tree. Skill-only deployments
+// (workbuddy / `~/.claude/skills/` / `~/.agents/skills/`) had the legacy
+// `__dirname/../../.env` resolve to a non-existent `~/.agents/.env`, so
+// PROXY_SERVER / CHROME_PROFILE / AGENTCHAT_DISABLED silently dropped to
+// defaults — providers that depended on the gate (Qwen, etc.) re-entered
+// the chain, hit auth walls, and burned 3 minutes of cascade budget before
+// failing with exit 2.
+//
+// New lookup order, first hit wins (5 candidates — chain.js is not part of
+// origin/master's loader, so the AGENTCHAT_PROVIDERS / AGENTCHAT_DISABLED
+// gate still applies at first provider attempt only):
+//
+//   1. $AGENTCHAT_ENV_FILE              (explicit override)
+//   2. $AGENTCHAT_HOME/.env             (env-var override for user-level dir)
+//   3. $HOME/.agentchat/.env            (user-level default — recommended for
+//                                        cross-deployment/cross-project use)
+//   4. <entry-point>/.env, then every ancestor dir up to / (climb, max 12
+//      hops)                             (covers repo AND deployment layouts)
+//   5. <__dirname>/../../.env + <cwd>/.env (legacy fall-through)
+//
+// On the FIRST call only, emit one stderr line so a missing config is loud
+// BEFORE the cascade burns:
+//   [agentchat-env] loaded <path>            on success
+//   [agentchat-env] NOT LOADED — <list> + 3 fix options   on miss
+// process.env never overwritten; no key material ever printed.
+const _os = require('os');
+const MAX_CLIMB_HOPS = 12;
+let _loadedOnce = false;
+let _loadedPath = null;
+let _loadedCandidates = null;
+let _announced = false;
+function _buildCandidates() {
+    const list = [];
+    if (process.env.AGENTCHAT_ENV_FILE) list.push(process.env.AGENTCHAT_ENV_FILE);
+    if (process.env.AGENTCHAT_HOME) list.push(path.resolve(process.env.AGENTCHAT_HOME, '.env'));
+    list.push(path.join(_os.homedir(), '.agentchat', '.env'));
+    // Climb from the entry-point (or this module if `node -e`).
+    const start = (require.main && require.main.filename) || __filename;
+    if (start) {
+        let cur = path.dirname(start);
+        for (let i = 0; i < MAX_CLIMB_HOPS && cur && cur !== path.dirname(cur); i++) {
+            list.push(path.join(cur, '.env'));
+            cur = path.dirname(cur);
+        }
+    }
+    list.push(path.resolve(__dirname, '..', '..', '.env'));
+    list.push(path.resolve(process.cwd(), '.env'));
+    return list;
+}
+function _announce(loaded, candidates) {
+    if (_announced) return;
+    _announced = true;
+    try {
+        if (loaded) process.stderr.write(`[agentchat-env] loaded ${loaded}\n`);
+        else {
+            process.stderr.write(`[agentchat-env] NOT LOADED — none of the following paths exist:\n`);
+            for (const f of candidates) process.stderr.write(`  - ${f}\n`);
+            process.stderr.write('[agentchat-env] Fix: set AGENTCHAT_ENV_FILE=/path/to/.env OR ' +
+                                 'AGENTCHAT_HOME=/path/to/.agentchat OR create $HOME/.agentchat/.env\n');
+        }
+    } catch (_) {}
+}
 function loadDotEnv() {
-    const candidates = [
-        process.env.AGENTCHAT_ENV_FILE,
-        path.resolve(__dirname, '..', '..', '.env'),   // repo layout
-        path.resolve(process.cwd(), '.env'),           // caller's project
-    ].filter(Boolean);
+    if (_loadedOnce) {
+        _announce(_loadedPath, _loadedCandidates);
+        return _loadedPath;
+    }
+    _loadedOnce = true;
+    const candidates = _buildCandidates();
     for (const f of candidates) {
         let text;
         try { text = fs.readFileSync(f, 'utf8'); } catch (_) { continue; }
@@ -75,8 +140,13 @@ function loadDotEnv() {
                 (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
             if (!(m[1] in process.env)) process.env[m[1]] = val;
         }
+        _loadedPath = f;
+        _loadedCandidates = candidates;
+        _announce(f, candidates);
         return f; // first found wins (mirrors the shell loaders)
     }
+    _loadedCandidates = candidates;
+    _announce(null, candidates);
     return null;
 }
 const LOADED_ENV_FILE = loadDotEnv();
