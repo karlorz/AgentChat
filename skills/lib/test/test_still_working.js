@@ -196,6 +196,22 @@ await0(async () => {
         await extractResponse(null, mk('过渡态能量'), cfg, prompt) !== null);
     assert('short prompt exempt',
         await extractResponse(null, mk('你好呀朋友'), cfg, '你好呀朋友') !== null);
+    // v34: genuinely short answers to short prompts pass the length gate.
+    assert('short answer to short prompt passes (v34)',
+        await extractResponse(null, mk('今天是星期三。'), cfg, '請用繁體中文一句話回答：今天星期幾？') !== null);
+    assert('very short answer to very short prompt passes (v34)',
+        await extractResponse(null, mk('星期三'), cfg, '今天星期幾？') !== null);
+    assert('sub-4-char answer to short prompt still rejected (v34)',
+        await extractResponse(null, mk('不'), cfg, '今天星期幾？') === null);
+    // v34: a reused tab whose OLD turn holds the SAME prompt + answer must not
+    // re-return the old turn's text when the baseline gate falls back to
+    // `.last()` (the v19 echo guard is blind to same-prompt conversations).
+    assert('pre-send snapshot identical to extracted text rejected (v34 stale)',
+        await extractResponse(null, mk('今天是星期三。'), cfg, '請用繁體中文一句話回答：今天星期幾？',
+            { '.model-response-text, message-content': '今天是星期三。' }) === null);
+    assert('different answer passes with pre-send snapshot present (v34)',
+        await extractResponse(null, mk('今天是星期四。'), cfg, '請用繁體中文一句話回答：今天星期幾？',
+            { '.model-response-text, message-content': '今天是星期三。' }) !== null);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

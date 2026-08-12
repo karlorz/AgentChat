@@ -94,9 +94,17 @@ function looksLikePreGeneration(text) {
     return false;
 }
 
-function validateResponseComplete(text) {
+function effectiveMinResponseLength(prompt, configured = 10) {
+    const base = Number.isFinite(configured) ? configured : 10;
+    const plen = typeof prompt === 'string'
+        ? prompt.replace(/\s+/g, ' ').trim().length : 0;
+    if (plen <= 24) return Math.max(3, Math.min(base, Math.ceil(plen / 3)));
+    return base;
+}
+
+function validateResponseComplete(text, prompt) {
     const trimmed = (text || '').trim();
-    if (trimmed.length < 10) return { ok: false, reason: 'too_short' };
+    if (trimmed.length < effectiveMinResponseLength(prompt)) return { ok: false, reason: 'too_short' };
     if (/^搜索网页\s*\n[\s\S]{0,200}\d+\s*个结果\s*$/.test(trimmed)) return { ok: false, reason: 'search_only' };
     if (/^Searching\w*\s*\n[\s\S]{0,200}\d+\s*results?\s*$/i.test(trimmed)) return { ok: false, reason: 'search_only' };
     if (/^(?:Thought|Thinking|思考中|分析中)\s*for\s*\d+s?\s*$/im.test(trimmed) && trimmed.length < 60) {
@@ -499,7 +507,7 @@ module.exports = {
     },
 
     // ── Post-response: dual-draft resolution + validate + safety rejection ──
-    postResponseHook: async (page, text) => {
+    postResponseHook: async (page, text, cfg) => {
         // Dual-draft panel (选项 A / 选项 B): the factory's polled .last()
         // element is draft B in that mode (document-order last). Replace the
         // text with draft A — deterministic, single draft, never concatenated.
@@ -518,7 +526,7 @@ module.exports = {
         // the total response to be short, (c) anchor phrases to first person.
         assertNotRefusal(text);
 
-        const validation = validateResponseComplete(text);
+        const validation = validateResponseComplete(text, cfg && cfg.prompt);
         if (!validation.ok) {
             // v32: Grace re-read — the search→answer gap can cause premature
             // stability declaration. The stability poller saw search-status
@@ -536,7 +544,7 @@ module.exports = {
             while (Date.now() < deadline) {
                 await page.waitForTimeout(POLL_MS);
                 const retext = await readResponseText(page);
-                const reval = validateResponseComplete(retext);
+                const reval = validateResponseComplete(retext, cfg && cfg.prompt);
                 if (reval.ok) {
                     // Got real answer text — run dual-draft + safety checks
                     const finalText = (await extractFirstDraft(page, retext)) || retext;

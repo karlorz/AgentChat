@@ -878,8 +878,15 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
         const perWait = Math.min(selTimeout, Math.max(1000, remaining));
 
         if (baseline && Number.isInteger(baseline[sel]) && baseline[sel] > 0) {
+            // The first node BEYOND the pre-send count is the new turn. On a
+            // reused tab this can take a while to mount (long-thinking models
+            // stream the answer late), so the gate must outlast the typical
+            // render delay — capped by the remaining budget, never the old
+            // fixed 15s that let slow renders fall through to the stale
+            // `.last()` fallback mid-answer.
+            const gateWait = Math.min(perWait, 60_000);
             const freshGate = await page.locator(sel).nth(baseline[sel])
-                .waitFor({ state: 'attached', timeout: Math.min(perWait, 15_000) })
+                .waitFor({ state: 'attached', timeout: gateWait })
                 .then(() => true)
                 .catch(() => false);
             if (freshGate) {
@@ -1154,8 +1161,20 @@ async function collectResponseImages(responseEl, config) {
     }, { scopeSel, minPx });
 }
 
-async function extractResponse(page, responseEl, config, prompt) {
+async function extractResponse(page, responseEl, config, prompt, baselineText) {
     let text = (await responseEl.evaluate(IN_PAGE_TEXT_WITH_MATH)).trim();
+
+    // v34: a genuinely short answer ("今天是星期三。") to a short prompt must
+    // not be rejected by the fixed 10-char floor. Scale the minimum by prompt
+    // length — 3 chars floor, 10 chars for prompts longer than 24 chars.
+    const effectiveMinLen = (() => {
+        const base = Number.isFinite(config.minResponseLength)
+            ? config.minResponseLength : 10;
+        const plen = typeof prompt === 'string'
+            ? prompt.replace(/\s+/g, ' ').trim().length : 0;
+        if (plen <= 24) return Math.max(3, Math.min(base, Math.ceil(plen / 3)));
+        return base;
+    })();
 
     // v13: capture image URLs BEFORE the text-length gate — a pure-image
     // response ("here's your picture", no prose) previously died right here
@@ -1176,7 +1195,7 @@ async function extractResponse(page, responseEl, config, prompt) {
         } catch (_) { /* best-effort — never fail extraction over image scan */ }
     }
 
-    const hasText = !!(text && text.length >= config.minResponseLength);
+    const hasText = !!(text && text.length >= effectiveMinLen);
     if (!hasText && images.length === 0) return null;
 
     if (hasText && prompt && typeof prompt === 'string') {
@@ -1197,6 +1216,22 @@ async function extractResponse(page, responseEl, config, prompt) {
                 return null; // echoed prompt → EXTRACT error upstream
             }
         }
+        // v34 stale-text guard: when the baseline gate had to fall back to the
+        // pre-existing `.last()` element (reused tab), extracting a response
+        // identical to the pre-send snapshot means we captured the OLD turn's
+        // answer — the new answer either never rendered or is still streaming.
+        // Reject it so the run fails honestly instead of answering from a
+        // previous conversation. (A genuinely unchanged answer to a repeated
+        // question is the one acceptable miss — re-asking yields the same text.)
+        if (baselineText && typeof baselineText === 'object') {
+            const staleMatch = Object.values(baselineText).some(prev =>
+                typeof prev === 'string' && prev.length > 0 && prev === norm(text)
+            );
+            if (staleMatch) {
+                flog(config.key, `stale-guard: extracted text equals the pre-send response snapshot — refusing old-turn answer (len=${norm(text).length})`);
+                return null;
+            }
+        }
     }
 
     // Post-response hook (e.g. Claude thinking filter)
@@ -1204,7 +1239,7 @@ async function extractResponse(page, responseEl, config, prompt) {
         text = await config.postResponseHook(page, text, config);
     }
 
-    const finalTextOk = !!(text && text.length >= config.minResponseLength);
+    const finalTextOk = !!(text && text.length >= effectiveMinLen);
     if (!finalTextOk && images.length === 0) return null;
 
     let out = finalTextOk ? text : '';
@@ -1753,10 +1788,23 @@ function createProviderRunner(cfg) {
         // the guard is inert there. Best-effort: failures just disable the guard.
         // v20 CDP perf: the counts are independent — issue them in parallel
         // instead of N serial round-trips (Claude's adapter has 5 selectors).
+        // v34: also snapshot the LAST pre-existing response text per selector.
+        // When the baseline gate falls back to `.last()` and the old
+        // conversation already contains THIS prompt (repeated question), the
+        // v19 echo guard cannot detect staleness — extractResponse rejects
+        // text identical to this snapshot instead.
         const baselineCounts = {};
+        const baselineText = {};
         await Promise.all(C.responseSelectors.map(sel =>
             page.locator(sel).count()
-                .then(n => { baselineCounts[sel] = n; })
+                .then(n => {
+                    baselineCounts[sel] = n;
+                    if (n > 0) {
+                        return page.locator(sel).last().evaluate(IN_PAGE_TEXT_WITH_MATH)
+                            .then(t => { baselineText[sel] = String(t || '').trim(); })
+                            .catch(() => {});
+                    }
+                })
                 .catch(() => { /* guard disabled for this selector */ })
         ));
 
@@ -1821,7 +1869,7 @@ function createProviderRunner(cfg) {
         // Shallow per-run copy: C is shared across invocations of this runner,
         // so per-run state (baselineCounts) must never be written onto it.
         // v19: promptForEcho powers the stale-answer guard (see waitForCompletion)
-        const responseEl = await waitForCompletion(page, { ...C, baselineCounts, promptForEcho: prompt }, provStart, timeoutMs);
+        const responseEl = await waitForCompletion(page, { ...C, baselineCounts, baselineText, promptForEcho: prompt }, provStart, timeoutMs);
         if (!responseEl) {
             // v17: a wall can also mount MID-WAIT (post-send throttle, session
             // expiry during generation). Probe once before classifying, so the
@@ -1850,7 +1898,7 @@ function createProviderRunner(cfg) {
         // used to always collapse to reason='error' — losing the safety signal.
         let response;
         try {
-            response = await extractResponse(page, responseEl, C, prompt);
+            response = await extractResponse(page, responseEl, C, prompt, baselineText);
         } catch (e) {
             return classifyError(e, STAGES.EXTRACT, C.key);
         }
