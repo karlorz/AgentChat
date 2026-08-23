@@ -18,6 +18,7 @@ description: Sequential 6-step AI pipeline — Claude Code plans→Kimi searches
 - ❌ 禁止：以"任务太简单/纯本地/不需要搜索"为由跳过 Step 2 (`--search`)
 - ❌ 禁止：以"产出很简单/不需要审查"为由跳过 Step 5 (`--review`)
 - ❌ 禁止：用本地文件读取、代码分析、或 Claude 自身知识替代 `node index.js` 调用
+- ❌ 禁止：把本地文件路径写入 prompt 指望网页 AI 自读（它无权访问本地磁盘）。须由 Claude Code 读入内容后再发送
 - ✅ 必须：Step 2 和 Step 5 **无条件执行**。复杂度判定仅影响 Step 3（Gemini 推理）是否跳过
 - ✅ 必须：每步产生可验证的 `node index.js` JSON 输出，结果返回后才可补充你的解读
 

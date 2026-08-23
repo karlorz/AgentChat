@@ -2,7 +2,7 @@
 /**
  * AI Fallback Chain — Multi-Provider CDP Bridge
  *
- * Priority chain: Gemini (Pro Extended) → ChatGPT → Claude → Qwen → Kimi → MiniMax → MiMo → DeepSeek
+ * Priority chain: Gemini (3.6 Flash + Extended Thinking default) → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
  * Falls to next provider on quota exhaustion or service unavailability.
  * Only ONE provider is used per invocation — first available wins.
  *
@@ -17,6 +17,7 @@
  *                                   # (used by AgentChat-IndependentTasks, which owns
  *                                   # its own cross-provider fallback + locking)
  *   node index.js --no-download-images "..."  # skip image download post-processing
+ *   node index.js --image-path=/path/to/img.png "prompt"  # upload image before prompt
  *   node index.js --ephemeral-tab "..."  # dedicated new tab, never reused, closed on exit
  *                                   # (required by same-provider concurrency:
  *                                   # AGENTCHAT_MAX_TABS_PER_PROVIDER > 1)
@@ -190,10 +191,12 @@ const { PROVIDER_CHAIN } = require('../lib/providers/chain');
 //   Qwen:    React SPA 3s delay, stop-btn detached (not hidden), model-name strip
 //   Kimi:    New-session hook per call, .send-button-container disabled detection
 //   MiniMax: TipTap/ProseMirror async mount 4s delay
+//   ChatGLM: Zhipu AI React SPA, agentic tool/search phases
+//   Doubao:  ByteDance React SPA, agentic tool/search phases, stillWorkingCheck
 //   MiMo:    DOM-traversal send button, React SPA 4s delay
 //   DeepSeek: Standard pipeline, ds-markdown response
 
-const PROVIDER_KEYS = ['gemini','chatgpt','claude','qwen','kimi','minimax','mimo','deepseek'];
+const PROVIDER_KEYS = ['gemini','chatgpt','claude','qwen','kimi','minimax','chatglm','doubao','mimo','deepseek'];
 const ADAPTER_CONFIGS = Object.fromEntries(
   PROVIDER_KEYS.map(k => [k, require(`../lib/providers/adapters/${k}`)])
 );
@@ -857,7 +860,7 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
             // Dispatch to provider runner (each receives ctx for telemetry tracking)
             const runner = RUNNERS[provider.key];
             result = runner
-                ? await runner(page, prompt, perProvTimeout, ctx)
+                ? await runner(page, prompt, perProvTimeout, ctx, { images: options.images })
                 : classifyError(new Error(`Unknown provider: ${provider.key}`), 'navigate', provider.key);
         } catch (err) {
             const pe = new ProviderError(err, { stage: 'unknown', provider: provider.key });
@@ -1005,6 +1008,7 @@ async function main() {
     let singleAttempt = false; // --single: try exactly one provider, no cascade
     let downloadImages = true; // download images from response to cwd (--no-download-images to disable)
     let imageIntent = false;   // v14 --image: append IMAGE_ENHANCE_INSTRUCTION in-process
+    let imagePaths = [];       // v24 --image-path: image files to upload before sending prompt
     // v19 --ephemeral-tab: run in a DEDICATED new tab (never reuse an existing
     // provider tab; close our tab on exit). Required for same-provider
     // concurrency (AGENTCHAT_MAX_TABS_PER_PROVIDER > 1): with reuse, two
@@ -1014,7 +1018,7 @@ async function main() {
     let ephemeralTab = false;
 
     const USAGE =
-        'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
+        'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
         '       echo "prompt" | node index.js [flags]';
     // v14: usage errors exit 64 (BSD EX_USAGE), WITH a receipt. They used to
     // exit 1 — colliding with ERR_NO_CDP, so a caller-side bug (empty prompt)
@@ -1069,6 +1073,12 @@ async function main() {
             // v14: image-generation intent — index.js appends the canonical
             // enhancement instruction itself (see IMAGE_ENHANCE_INSTRUCTION).
             imageIntent = true;
+        } else if (a.startsWith('--image-path=')) {
+            // v24: image upload — read image file(s), paste into chat before prompt.
+            // Repeatable: --image-path=a.png --image-path=b.jpg
+            const p = (a.split('=')[1] || '').trim();
+            if (p) imagePaths.push(p);
+            else log('WARN: ignoring empty --image-path=');
         } else if (a.startsWith('--only=')) {
             // Try exactly ONE provider — no internal fallback. Used by IndependentTasks
             // so that fallback control lives solely in the orchestrator layer.
@@ -1132,6 +1142,58 @@ async function main() {
     }
 
     ctx.telemetry.prompt_length_chars = prompt.length;
+
+    // v24: read & encode image files for upload (before prompt text).
+    // Supported formats: png, jpg, jpeg, gif, webp, bmp, svg, tiff.
+    const MIME_BY_EXT = {
+        png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+        gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+        svg: 'image/svg+xml', tiff: 'image/tiff', tif: 'image/tiff',
+        ico: 'image/x-icon', avif: 'image/avif',
+    };
+    const MAX_IMAGE_FILE_BYTES = 50 * 1024 * 1024; // 50MB per file
+    let encodedImages = [];
+    if (imagePaths.length > 0) {
+        for (const rawPath of imagePaths) {
+            let absPath = rawPath;
+            try {
+                // Resolve relative paths against cwd
+                if (!path.isAbsolute(rawPath)) absPath = path.resolve(process.cwd(), rawPath);
+                if (!fs.existsSync(absPath)) {
+                    log(`ERROR: image file not found: ${absPath}`);
+                    usageExit(`image file not found: ${rawPath}`);
+                }
+                const stat = fs.statSync(absPath);
+                if (stat.size > MAX_IMAGE_FILE_BYTES) {
+                    log(`ERROR: image file too large (${stat.size} bytes > ${MAX_IMAGE_FILE_BYTES}): ${absPath}`);
+                    usageExit(`image file too large: ${rawPath} (${stat.size} bytes)`);
+                }
+                const ext = path.extname(absPath).toLowerCase().replace('.', '');
+                const mimeType = MIME_BY_EXT[ext];
+                if (!mimeType) {
+                    log(`ERROR: unsupported image format: .${ext} (${absPath})`);
+                    usageExit(`unsupported image format: .${ext} — supported: ${Object.keys(MIME_BY_EXT).join(', ')}`);
+                }
+                const buffer = fs.readFileSync(absPath);
+                const base64 = buffer.toString('base64');
+                encodedImages.push({
+                    base64,
+                    mimeType,
+                    fileName: path.basename(absPath),
+                    path: absPath,
+                    sizeBytes: stat.size,
+                });
+                log(`  📎 Image queued: ${path.basename(absPath)} (${mimeType}, ${(stat.size / 1024).toFixed(1)}KB)`);
+            } catch (e) {
+                if (e.code === 'ENOENT') {
+                    usageExit(`image file not found: ${rawPath}`);
+                }
+                log(`ERROR reading image ${rawPath}: ${e.message}`);
+                usageExit(`cannot read image file: ${rawPath} — ${e.message}`);
+            }
+        }
+        ctx.telemetry.image_upload_count = encodedImages.length;
+    }
 
     // Connect to Chrome.
     // v15: ensureChromeCdp() first — on Windows agent hosts (workbuddy etc.)
@@ -1201,6 +1263,7 @@ async function main() {
                 keepTabs,
                 singleAttempt,
                 ephemeralTab, // v19: dedicated tab, no reuse, closed on exit
+                images: encodedImages, // v24: images to paste before prompt text
                 // v12: one-shot mid-chain CDP recovery (see browser-loss fail-fast)
                 reconnect: () => connectWithRetry(CDP_URL, 2),
             });

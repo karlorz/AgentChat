@@ -19,6 +19,8 @@
  */
 
 const { chromium } = require('playwright-core');
+const fs = require('fs');
+const path = require('path');
 
 // ═══ CLI args ═══
 const args = process.argv.slice(2);
@@ -29,6 +31,7 @@ const COURSE_URL = flag('course-url');
 const MAX_DETAIL  = parseInt(flag('max-detail') || '12', 10);
 const DETAIL_TIMEOUT = parseInt(flag('detail-timeout') || '8000', 10);
 const CDP_URL = process.env.CDP_URL || 'http://127.0.0.1:9222';
+const ATTACHMENT_DIR = '/tmp/agentchat_scraper_attachments';
 
 // ═══ Helpers ═══
 function log(msg) { process.stderr.write(`[scraper] ${msg}\n`); }
@@ -54,6 +57,7 @@ function hasVisibleQuestion(text) {
 // ═══ Main ═══
 (async () => {
   const startTime = Date.now();
+  fs.mkdirSync(ATTACHMENT_DIR, { recursive: true });
   log('Connecting to Chrome CDP...');
 
   let browser;
@@ -212,7 +216,7 @@ function hasVisibleQuestion(text) {
         return detailPage.waitForSelector('#region-main', { timeout: 2000 }).catch(() => {});
       });
 
-      const detailData = await detailPage.evaluate(() => {
+      const detailData = await detailPage.evaluate(async () => {
         // Try multiple Moodle content selectors in priority order
         const contentNode =
           document.querySelector('#intro') ||
@@ -230,8 +234,45 @@ function hasVisibleQuestion(text) {
           url: a.href
         }));
 
-        return { description, files };
+        // Download file contents in same parallel pass (eliminates Step 0b)
+        const fileContents = await Promise.all(files.map(async (f) => {
+          try {
+            const resp = await fetch(f.url, { credentials: 'include' });
+            if (!resp.ok) return { idx: files.indexOf(f), error: `HTTP ${resp.status}` };
+            const buf = await resp.arrayBuffer();
+            const bytes = new Uint8Array(buf);
+            let binary = '';
+            for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+            return { idx: files.indexOf(f), b64: btoa(binary), size: buf.byteLength };
+          } catch (e) {
+            return { idx: files.indexOf(f), error: e.message };
+          }
+        }));
+
+        return { description, files, fileContents };
       });
+
+      // Save downloaded attachment files to local disk
+      if (detailData.fileContents && detailData.files) {
+        for (const fc of detailData.fileContents) {
+          const f = detailData.files[fc.idx];
+          if (fc.b64 && f) {
+            try {
+              const buf = Buffer.from(fc.b64, 'base64');
+              const safeName = f.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+              const localPath = path.join(ATTACHMENT_DIR, `${Date.now()}_${item.title.replace(/[^a-zA-Z0-9一-鿿_-]/g, '_')}_${safeName}`);
+              fs.writeFileSync(localPath, buf);
+              f.localPath = localPath;
+              f.size = fc.size;
+            } catch (e) {
+              f.downloadError = e.message;
+            }
+          } else if (fc.error && f) {
+            f.downloadError = fc.error;
+          }
+        }
+        delete detailData.fileContents; // strip b64 from JSON output
+      }
 
       item.detail = detailData;
       item.hasQuestionText = hasVisibleQuestion(detailData.description);

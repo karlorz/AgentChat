@@ -53,6 +53,12 @@
   - 仓库根 `--smoke` → 同结果，无回归
   - `HOME=/nonexistent-homedir --doctor` → 完整候选列表 + 3 修复选项，无密钥回显
 
+## 2026-08-07 (v24) — 图片上传协议 (Image Upload Protocol)
+- **[P1] 图片上传管线 (`index.js` + `lib/providerFactory.js`)**: 新增 `--image-path=PATH` CLI flag，支持在发送 prompt 前将本地图片文件粘贴到 AI 聊天对话框。流程：读取图片→base64编码→async Clipboard API 写入剪贴板→Ctrl+V 粘贴→等待上传→输入 prompt 文本。支持 png/jpg/gif/webp/bmp/svg/tiff/avif/ico 格式，单文件 50MB 上限
+- **[P1] 双重备用粘贴路径 (`pasteImagesToEditor` / `fallbackPasteImage`)**: 主路径走 async Clipboard API + Ctrl+V；备用路径走模拟 ClipboardEvent + DataTransfer（进程内，无 OS 剪贴板竞争）；最终兜底走 contenteditable 直接注入 `<img>` 标签
+- **[P2] 多图片支持**: `--image-path` 可重复使用，支持一次上传多张图片
+- **[docs] SKILL.md**: 新增「图片上传协议」完整章节——触发条件、粘贴流程、支持格式、使用示例、AI Agent 调用规范；CLI flags 表新增 `--image-path` 行；Invocation 新增图片上传示例；Trigger 列表新增图片上传场景
+
 ## 2026-07-19 (v18) — Windows CDP 端口不可达四联修
 - **[P0] Job Object 陪葬 (`lib/cdp.js` + `scripts/start-chrome.ps1`)**: agent 宿主的工具调用跑在 kill-on-close Job 里，Node `detached: true` 不设置 `CREATE_BREAKAWAY_FROM_JOB`，autostart/Start-Process 出来的 Chrome 在 skill 进程退出瞬间被连带杀掉——"回答完问题，下一轮 ERR_NO_CDP" 的直接成因。现: 内嵌启动器与 ps1 均经 WMI `Win32_Process.Create` 创建进程（父进程 WmiPrvSE.exe，位于任何调用方 Job 之外），同时拿到真实 PID 写入 PID 文件保持 `-Stop` 互操作；WMI 不可用时降级为 plain spawn 并显式告警
 - **[P0] Windows 单例吸收 (`launchChromeDirect`)**: Windows Chrome 单例是命名 mutex/消息窗口而非 `Singleton*` 文件——v16 的删文件解锁在 Windows 上是 no-op，同 profile 已有存活实例时新 chrome.exe 被吸收秒退、端口永不绑定、傻等 45s 后报泛化失败。现: 启动前经 CIM 扫描持有 `--user-data-dir=<profile>` 的 chrome/msedge/chromium 进程；命中且为 PID 文件记录的受管实例 → `taskkill /T /F` 回收后重启，他人实例 → 快速 loud-fail 并给出 PID 与三条处置指引（POLICY 不变: 绝不动用户自己的 Chrome）。`Singleton*` 文件清理收窄至 POSIX

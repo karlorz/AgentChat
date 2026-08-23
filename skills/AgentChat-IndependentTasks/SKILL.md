@@ -59,11 +59,27 @@ N 道独立任务，M 个能力等同的 AI（最多 7：gemini/chatgpt/qwen/kim
 
 10. **禁止 M=N 满配部署（零 fallback 陷阱）。** 当所有可用 provider 全部作为 primary 派在同一 wave 时，`index.js` 的 skipList 机制会将其他 primary 从每个 worker 的 fallback 链中预过滤删除——每个 worker 只剩 `[自身]`，一次失败即 `ALL_EXHAUSTED`。**防御**：(a) 始终保留 ≥1 个 provider 不设 primary 作为"热备"；(b) 或设 `AGENTCHAT_MAX_TABS_PER_PROVIDER=2` 启用同 provider 多 tab 并发；(c) 无法满足 (a)(b) 时，L1 补发 group 数 ≤ M−1。
 
+11. **附件已在 Step 0 并行提取完毕。** `moodle_scraper.js` 的并行 detail fetch 阶段已一并下载所有附件到 `/tmp/agentchat_scraper_attachments/`（`files[].localPath`）。之后直接进入 OCR/文本提取，**禁止**再开第二轮 Playwright 连接下载。
+
+12. **本地上下文须由 Claude Code 注入 prompt。** 网页 AI 无法访问本地文件系统。派发前 Claude Code 须将涉及的本地文件/代码内容读入 prompt 正文，禁止只传路径指望网页 AI 自读。
+
 ## Step 0：网页内容爬取（仅当题目来源为浏览器页面时）
 
 ```bash
 node ~/.claude/skills/AgentChat-OneWeb/moodle_scraper.js --detail-timeout=15000 --max-detail=15
 ```
+
+### Step 0a：检查附件
+
+检查 scraper 输出中 `files[].localPath` 存在的附件（moodle_scraper 已在并行 detail fetch 阶段下载到 `/tmp/agentchat_scraper_attachments/`）。同时列出 `questionText` 足够清晰、直接可用的作业。
+
+### Step 0b：附件 OCR/文本提取（来源已在 Step 0 下载）
+
+附件文件位于 `files[].localPath`，从中提取文字：
+
+- PNG 等图片：`tesseract <localPath> <outbase> -l chi_sim+eng`
+- PDF：`pdftotext <localPath> -`
+- 无可用的 OCR/文本工具时，在 `tasks_extracted.json` 的 `question` 中标注 `"题目见附件图片 [文件名]"` 并简要描述图片内容（如"光谱项列表"、"特征标表格"），交由 Step 2 的 AI 直接判读
 
 ## Step 0.5：本地文档快速提取协议（省 token）
 

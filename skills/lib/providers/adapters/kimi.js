@@ -440,27 +440,37 @@ module.exports = {
         '[role="textbox"]',
     ],
 
-    // ── Kimi's send button loses "disabled" class when text is entered ──
-    customSend: async (page) => {
-        const sendBtn = page.locator('.send-button-container').first();
-        await page.waitForTimeout(800);
-        // BUGFIX: catch default was inverted. If the button doesn't exist,
-        // evaluate() rejects → .catch(() => false) claimed "not disabled" →
-        // sendBtn.click() then burned a 30s locator timeout and failed the
-        // whole provider. A missing/unknown button must route to Enter.
-        const isDisabled = await sendBtn.evaluate(
-            el => el.className.includes('disabled')
-        ).catch(() => true);
-        if (isDisabled) {
-            await page.keyboard.press('Enter');
-        } else {
-            try {
-                await sendBtn.click({ timeout: 5000 });
-            } catch (_) {
-                await page.keyboard.press('Enter'); // click failed → Enter fallback
-            }
-        }
+    // ── v26: Kimi's React contenteditable corrupts every async input path
+    // (DataTransfer paste, clipboard, keyboard.insertText).  document.execCommand
+    // ('insertText') is a synchronous browser-native contenteditable write — one
+    // atomic operation that replaces the selection.  React's mutation observer
+    // picks up the DOM change post-commit, avoiding the race conditions that
+    // shred chunked/keyboard input.  Short prompts go through the same path for
+    // consistency.
+    input: async (page, editor, prompt) => {
+        await editor.focus();
+        await page.waitForTimeout(200);
+        await editor.evaluate((el, text) => {
+            // Select all existing content then replace in one atomic operation
+            el.focus();
+            const sel = window.getSelection();
+            sel.selectAllChildren(el);
+            document.execCommand('insertText', false, text);
+        }, prompt);
+        await page.waitForTimeout(1500);
+        return true;
     },
+
+    // ── v26: Use factory clickSend (same as ChatGPT) — enabled-polling,
+    // selector rotation, Enter fallback, commit tracking. Replaces the
+    // fragile customSend that only knew about .send-button-container.
+    sendSelectors: [
+        '.send-button-container',          // Kimi-specific primary
+        'button[aria-label*="发送"]',
+        '[class*="send-btn"]',
+        '[class*="send-button"]',
+    ],
+    sendFallback: 'Enter',
 
     responseSelectors: RESPONSE_SELECTORS,
     responseSelectorTimeout: 60_000,
