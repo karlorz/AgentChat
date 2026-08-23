@@ -2,10 +2,11 @@
  * Gemini provider adapter config.
  *
  * Key differences from standard pipeline:
- *   - Pro Extended Thinking activation (preInputHook), v34: Pro→verified
- *     3.6 Flash + Extended Thinking fallback; the default path requires the
- *     independently verified 3.6 Flash and Extended Thinking menu selections
- *     and fails honestly rather than sending under a stale tab selection
+ *   - Pro Extended Thinking activation (preInputHook), v36: Pro→verified
+ *     newest-full-Flash + Extended Thinking fallback; the default path
+ *     requires the independently verified newest full Flash item in the
+ *     live menu plus Extended Thinking, and fails honestly rather than
+ *     sending under a stale tab selection
  *   - Bursty output detection (stillGeneratingCheck) — resets stability clock
  *     when Pro Extended pauses mid-reasoning for 6s+
  *   - Action Toolbar completion anchor — Copy/Good-response buttons = definitive "done"
@@ -303,20 +304,20 @@ module.exports = {
 
         if (usingPro) {
             // Pro path: try Pro Extended first, then the verified default:
-            // exact 3.6 Flash plus Extended Thinking. We never substitute
-            // Flash-Lite or an arbitrary active model.
+            // newest full Flash in the live menu plus Extended Thinking.
+            // We never substitute Flash-Lite or an arbitrary active model.
             if (await ensureProExtended(page, 1, log)) {
                 log('gemini: Pro Extended Thinking active (Pro subscription)');
                 return;
             }
-            log('gemini: Pro Extended unavailable, falling back to verified 3.6 Flash...');
+            log('gemini: Pro Extended unavailable, falling back to verified newest full Flash...');
         }
 
-        // Flash path (default): exact 3.6 Flash + Extended Thinking only.
+        // Flash path (default): newest full Flash + Extended Thinking only.
         // A model-picker failure must not silently send under an existing
         // Pro or Flash-Lite selection on a reused tab.
         if (await ensureFlash(page, log)) {
-            log(`gemini: 3.6 Flash + Extended Thinking active (${usingPro ? 'Pro fallback' : 'default'})`);
+            log(`gemini: newest full Flash + Extended Thinking active (${usingPro ? 'Pro fallback' : 'default'})`);
             return;
         }
 
@@ -325,7 +326,7 @@ module.exports = {
         // misleading Gemini answer produced by whichever model was already on
         // the page.
         throw Object.assign(
-            new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=3.6 Flash + Extended Thinking`),
+            new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest full Flash + Extended Thinking`),
             { code: 'ERR_MODEL_DEGRADED' }
         );
     },

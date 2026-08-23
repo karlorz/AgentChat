@@ -4,21 +4,22 @@
 /**
  * Regression tests for the Gemini model picker.
  *
- * The live 2026-08 menu has:
- *   - 3.5 Flash-Lite (available, not target)
- *   - 3.6 Flash (the exact default target)
- *   - 3.1 Pro (may be selected before automation runs)
+ * Default Flash is the newest full Flash item actually present in the
+ * verified model menu, plus independently selected Extended Thinking.
+ * Never Lite/Pro/Ultra, never generic composer "Flash". A literal 3.6 pin
+ * is not required: zh_TW (and other locales) may already have retired it.
  *
  * These tests define the invariant: default mode may proceed only after the
- * selected mode is exactly 3.6 Flash and the independently selected Extended
- * Thinking row is present. A generic overlay (such as Upload tools) must
- * never be accepted or cached as the model picker.
+ * selected mode is the newest full Flash in that menu and the independently
+ * selected Extended Thinking row is present. A generic overlay (such as
+ * Upload tools) must never be accepted or cached as the model picker.
  */
 
 const {
     DEFAULT_FLASH_MODEL,
     isDefaultFlashText,
     isDefaultFlashItem,
+    pickNewestFullFlash,
     isGeminiModelMenuItems,
     isSelectedGeminiModelItem,
     selectedGeminiModelText,
@@ -41,13 +42,22 @@ function assert(name, actual, expected = true) {
     }
 }
 
-console.log('T1: exact latest Flash target');
-assert('target id is 3.6-flash', DEFAULT_FLASH_MODEL.id, '3.6-flash');
-assert('accepts 3.6 Flash label', isDefaultFlashText('3.6 Flash 全面協助'));
+function pickedText(items) {
+    const picked = pickNewestFullFlash(items);
+    return picked ? picked.text : null;
+}
+
+console.log('T1: full Flash candidates (any version; never Lite/Pro/Ultra)');
+assert('default id is not a literal 3.6 pin', DEFAULT_FLASH_MODEL.id !== '3.6-flash');
+assert('default id describes newest-full-flash', /newest-full-flash/i.test(DEFAULT_FLASH_MODEL.id));
+assert('accepts 3.6 Flash label as a full Flash candidate', isDefaultFlashText('3.6 Flash 全面協助'));
 assert('accepts whitespace-normalized 3.6 Flash', isDefaultFlashText('  3.6   Flash  '));
+assert('accepts 2.5 Flash as a full Flash candidate', isDefaultFlashText('2.5 Flash'));
+assert('accepts 3.7 Flash as a full Flash candidate', isDefaultFlashText('3.7 Flash 全面協助'));
 assert('rejects 3.5 Flash-Lite', isDefaultFlashText('3.5 Flash-Lite 最快答案 新'), false);
 assert('rejects 3.6 Flash Lite qualifier', isDefaultFlashText('3.6 Flash Lite'), false);
 assert('rejects 3.6 Flash Pro qualifier', isDefaultFlashText('3.6 Flash Pro'), false);
+assert('rejects 3.6 Flash Ultra qualifier', isDefaultFlashText('3.6 Flash Ultra'), false);
 assert('rejects 3.1 Pro', isDefaultFlashText('3.1 Pro 進階數學和程式碼'), false);
 assert('rejects generic Flash composer label', isDefaultFlashText('Flash'), false);
 
@@ -66,12 +76,12 @@ assert('rejects only an Extended Thinking menu item', isGeminiModelMenuItems([
     { text: '延伸思考 解決複雜問題', dataModeId: null },
 ]), false);
 
-console.log('\nT3: selected model must be exactly 3.6 Flash');
+console.log('\nT3: newest full Flash in the live menu wins');
 assert('reports selected current Pro mode', selectedGeminiModelText(liveModeItems), '3.1 Pro 進階數學和程式碼');
 const selected36 = liveModeItems.map(item => ({ ...item, selected: item.text.startsWith('3.6') }));
 assert('reports selected 3.6 Flash', selectedGeminiModelText(selected36), '3.6 Flash 全面協助');
-assert('selected target passes exact predicate', isDefaultFlashText(selectedGeminiModelText(selected36)));
-assert('selected Pro fails exact predicate', isDefaultFlashText(selectedGeminiModelText(liveModeItems)), false);
+assert('selected 3.6 still counts as a full Flash candidate', isDefaultFlashText(selectedGeminiModelText(selected36)));
+assert('selected Pro fails full Flash candidate predicate', isDefaultFlashText(selectedGeminiModelText(liveModeItems)), false);
 assert('accepts explicit selected 3.6 item', isDefaultFlashItem({
     text: '3.6 Flash 全面協助', selected: true,
 }));
@@ -85,7 +95,39 @@ assert('reads aria-checked selection evidence', isSelectedGeminiModelItem({
     text: '3.6 Flash 全面協助', ariaChecked: 'true',
 }));
 
-console.log('\nT4: default requires both 3.6 Flash and Extended Thinking');
+assert(
+    'fixture Lite + 3.6 Flash + Pro picks 3.6',
+    pickedText(liveModeItems),
+    '3.6 Flash 全面協助'
+);
+
+const menu37 = [
+    { text: '3.6 Flash 全面協助', dataModeId: 'fbb1', selected: true },
+    { text: '3.7 Flash 全面協助', dataModeId: 'aa77', selected: false },
+    { text: '3.1 Pro 進階數學和程式碼', dataModeId: '9d8c', selected: false },
+];
+assert('fixture 3.7 Flash + 3.6 Flash picks 3.7', pickedText(menu37), '3.7 Flash 全面協助');
+
+const zhTwNo36 = [
+    { text: '3.5 Flash-Lite 最快答案 新', dataModeId: 'cf41', selected: false },
+    { text: '2.5 Flash', dataModeId: 'a25f', selected: false },
+    { text: 'Flash', dataModeId: '', selected: false },
+    { text: '3.1 Pro 進階數學和程式碼', dataModeId: '9d8c', selected: true },
+    { text: '延伸思考 解決複雜問題', dataModeId: null, selected: false },
+];
+assert(
+    'zh_TW menu missing 3.6 still picks newest full Flash (2.5 Flash)',
+    pickedText(zhTwNo36),
+    '2.5 Flash'
+);
+assert('generic Flash in zh_TW menu is not a candidate', isDefaultFlashText('Flash'), false);
+assert('zero full Flash candidates returns null', pickedText([
+    { text: '3.5 Flash-Lite 最快答案', dataModeId: 'cf41' },
+    { text: 'Flash', dataModeId: 'gen' },
+    { text: '3.1 Pro 進階數學和程式碼', dataModeId: '9d8c' },
+]), null);
+
+console.log('\nT4: default requires newest full Flash AND Extended Thinking');
 const flashExtended = [
     { text: '3.5 Flash-Lite 最快答案', dataModeId: 'cf41', selected: false },
     { text: '3.6 Flash 全面協助', dataModeId: 'fbb1', selected: true },
@@ -109,6 +151,41 @@ assert('extended selection may be proven by aria-selected', isDefaultFlashExtend
         ? { ...item, selected: false, ariaSelected: 'true' }
         : item)
 ));
+
+const zhTwFlashExtended = zhTwNo36.map(item => ({
+    ...item,
+    selected: item.text.startsWith('2.5') || item.text.startsWith('延伸'),
+}));
+assert(
+    'zh_TW 2.5 Flash + Extended is default even without 3.6',
+    isDefaultFlashExtendedMenuState(zhTwFlashExtended)
+);
+assert(
+    'stale 3.6 selection fails when a newer full Flash is in the menu',
+    isDefaultFlashExtendedMenuState([
+        { text: '3.6 Flash 全面協助', dataModeId: 'fbb1', selected: true },
+        { text: '3.7 Flash 全面協助', dataModeId: 'aa77', selected: false },
+        { text: '延伸思考 解決複雜問題', dataModeId: null, selected: true },
+    ]),
+    false
+);
+assert(
+    '3.7 Flash + Extended is default when both 3.7 and 3.6 are present',
+    isDefaultFlashExtendedMenuState([
+        { text: '3.6 Flash 全面協助', dataModeId: 'fbb1', selected: false },
+        { text: '3.7 Flash 全面協助', dataModeId: 'aa77', selected: true },
+        { text: '延伸思考 解決複雜問題', dataModeId: null, selected: true },
+    ])
+);
+assert(
+    'zero candidates cannot satisfy default even with Extended selected',
+    isDefaultFlashExtendedMenuState([
+        { text: '3.5 Flash-Lite 最快答案', dataModeId: 'cf41', selected: false },
+        { text: 'Flash', dataModeId: 'gen', selected: true },
+        { text: '延伸思考 解決複雜問題', dataModeId: null, selected: true },
+    ]),
+    false
+);
 
 console.log('\nT5: zh-TW profile matches the live model-selector aria');
 locales.setLocale('zh_TW');
