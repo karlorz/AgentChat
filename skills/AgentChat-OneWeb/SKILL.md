@@ -5,7 +5,7 @@ description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT-
 
 # AI Fallback Chain — Multi-Provider CDP Bridge
 
-> **最后更新**: 2026-08-09
+> **最后更新**: 2026-08-23
 > **核心功能**: 按优先级链自动降级，确保始终有一个可用的大模型
 > **变更日志**: 见 [CHANGELOG.md](CHANGELOG.md)
 
@@ -253,7 +253,7 @@ AGENTCHAT_ENV_FILE=/path/to/AgentChat/.env \
 
 ```
 Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
-(3.6 Flash + Extended Thinking default)                            (last resort)
+(newest full Flash + Extended Thinking default)                    (last resort)
 ```
 
 First available provider wins. Each step falls through ONLY on confirmed unavailability (quota/auth/model-degraded), never on transient network errors.
@@ -271,11 +271,11 @@ First available provider wins. Each step falls through ONLY on confirmed unavail
 | **L3: 模型质量** | Pro/高级模型是否可用 | Gemini 特有，其他 provider 跳过 |
 
 ### Gemini 特殊处理
-Gemini 默认使用并**必须验证选中 `3.6 Flash` 及 `延伸思考`**（免费 tier，速度快）；`3.5 Flash-Lite`、`3.1 Pro`、标准思考与任何复用 tab 上的既有状态都不满足默认契约。如需 Pro 模型，设 `AGENTCHAT_GEMINI_MODEL=pro` 启用 **Pro Extended Thinking**（需 Gemini Pro 订阅，3-5 分钟生成）。
-模型激活策略（v34+）：
-1. **3.6 Flash + Extended Thinking**（默认，`AGENTCHAT_GEMINI_MODEL=flash` 或未设）— 仅在 Gemini 菜单中确认两项均勾选后发送 prompt
-2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **3.6 Flash + Extended Thinking**
-3. 无法选择或验证这两个默认状态 → Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Pro / Flash-Lite / 标准思考 / 页面现有模型冒充默认 Flash
+Gemini 默认使用并**必须验证选中当前菜单里最新的完整 Flash（newest full Flash，非 Lite/Pro/Ultra，亦非泛型 composer「Flash」）及 `延伸思考`**（免费 tier，速度快）；`Flash-Lite`、`Pro`、`Ultra`、标准思考与任何复用 tab 上的既有状态都不满足默认契约。不再硬钉字面 `3.6 Flash`——菜单里实际有的最新完整 Flash 才是默认。如需 Pro 模型，设 `AGENTCHAT_GEMINI_MODEL=pro` 启用 **Pro Extended Thinking**（需 Gemini Pro 订阅，3-5 分钟生成）。
+模型激活策略（v36+；v34 的 3.6 钉死已被取代）：
+1. **newest full Flash + Extended Thinking**（默认，`AGENTCHAT_GEMINI_MODEL=flash` 或未设）— 仅在 Gemini 已验证菜单中确认「最新完整 Flash」与「延伸思考」两项均勾选后发送 prompt
+2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **newest full Flash + Extended Thinking**
+3. 无法选择或验证这两个默认状态 → Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Pro / Flash-Lite / Ultra / 标准思考 / 页面现有模型冒充默认 Flash
 
 降级触发条件由各 adapter 的 `quotaPatterns` 定义（`lib/providers/adapters/<name>.js`），
 是权威来源。SKILL.md 不再维护第二份副本（过去已出现与代码不一致的漂移）。
@@ -465,7 +465,7 @@ index.js
    失败后关闭当前 tab，为下一个 provider 创建新 tab。
 3. **Quota detection via DOM** — 不依赖 HTTP 状态码，而是检查页面 DOM 内容判断是否被限流。
 4. **No cross-provider context** — 不对不同 provider 之间传递上下文。每次都是独立的 prompt。
-5. **Verified 3.6 Flash + Extended Thinking default, Pro Extended opt-in** — Gemini 默认必须在模型菜单中确认 **`3.6 Flash`** 与 **`延伸思考`** 都已选中；无法验证任一项则本 provider 失败并降级，绝不使用 Flash-Lite、Pro 或标准思考伪装成功。Pro Extended Thinking 通过 `AGENTCHAT_GEMINI_MODEL=pro` 显式启用（v34+）。
+5. **Verified newest full Flash + Extended Thinking default, Pro Extended opt-in** — Gemini 默认必须在已验证模型菜单中确认 **当前最新的完整 Flash** 与 **`延伸思考`** 都已选中（不钉死 3.6）；无法验证任一项则本 provider 失败并降级，绝不使用 Flash-Lite、Pro、Ultra 或标准思考伪装成功。Pro Extended Thinking 通过 `AGENTCHAT_GEMINI_MODEL=pro` 显式启用（v36+）。
 
 ---
 
@@ -475,7 +475,7 @@ index.js
 
 | Provider | 关键差异 | 详见 |
 |----------|---------|------|
-| **Gemini** | 默认严格选中并复开菜单验证 **`3.6 Flash` + `延伸思考`**；Pro Extended opt-in (`AGENTCHAT_GEMINI_MODEL=pro`)、bursty 输出检测、120s stop-btn 延长、Action Toolbar 完成锚点、搜索→回答间隙 grace re-read | `adapters/gemini.js` |
+| **Gemini** | 默认严格选中并复开菜单验证 **菜单内最新完整 Flash + `延伸思考`**（不钉 3.6）；Pro Extended opt-in (`AGENTCHAT_GEMINI_MODEL=pro`)、bursty 输出检测、120s stop-btn 延长、Action Toolbar 完成锚点、搜索→回答间隙 grace re-read | `adapters/gemini.js` |
 | **ChatGPT** | 3 层输入策略 (clipboard→simulated paste→chunked keyboard)、React 发送按钮状态验证 | `adapters/chatgpt.js` |
 | **Claude** | ProseMirror 编辑器、"Thinking" 占位符过滤、嵌入搜索块剥离 | `adapters/claude.js` |
 | **Qwen** | React SPA 3s 延迟、stop-btn detached 模式、模型名前缀剥离 | `adapters/qwen.js` |

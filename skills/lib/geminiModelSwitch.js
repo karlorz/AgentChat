@@ -74,20 +74,70 @@ const isProExtendedAria = (t) => /\bPro\b/i.test(String(t || '')) && includesExt
 const proDesc           = () => asRe(L.txt('proDesc'));
 const modelBtnSelector  = () => L.modelBtnCSS();
 
-// v34: Default means the current latest full Flash model plus Extended
-// Thinking, not merely any string containing "Flash". Flash-Lite is a distinct
-// product tier and must never satisfy the default-model contract.
+// Default Flash is the newest full Flash item actually present in the
+// verified model menu, plus independently selected Extended Thinking.
+// Do not pin a literal version (e.g. 3.6): locales may already have retired
+// that label. Never Lite/Pro/Ultra, never generic composer "Flash".
 const DEFAULT_FLASH_MODEL = Object.freeze({
-    id: '3.6-flash',
-    displayName: '3.6 Flash',
+    id: 'newest-full-flash',
+    displayName: 'newest full Flash',
 });
 
+const FLASH_TIER_RE = /\b(?:Lite|Pro|Ultra)\b/i;
+const FLASH_WORD_RE = /\bFlash\b/i;
+const LEADING_VERSION_RE = /^(\d+(?:\.\d+)*)/;
+
+function normalizeMenuText(text) {
+    return String(text || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseLeadingModelVersion(text) {
+    const m = normalizeMenuText(text).match(LEADING_VERSION_RE);
+    return m ? m[1] : null;
+}
+
+function compareModelVersions(a, b) {
+    const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
+    const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+    const len = Math.max(pa.length, pb.length);
+    for (let i = 0; i < len; i++) {
+        const da = pa[i] || 0;
+        const db = pb[i] || 0;
+        if (da !== db) return da - db;
+    }
+    return 0;
+}
+
 function isDefaultFlashText(text) {
-    const normalized = String(text || '').trim().replace(/\s+/g, ' ');
-    if (!/^3\.6\s+Flash(?:\s|$)/i.test(normalized)) return false;
-    // Never silently substitute an edition/tier that happens to share the
-    // "3.6 Flash" prefix. The target is the plain current full Flash item.
-    return !/\b(?:Lite|Pro|Ultra)\b/i.test(normalized);
+    const normalized = normalizeMenuText(text);
+    if (!FLASH_WORD_RE.test(normalized)) return false;
+    if (FLASH_TIER_RE.test(normalized)) return false;
+    return !!parseLeadingModelVersion(normalized);
+}
+
+function flashMenuLabel(itemOrText) {
+    const text = (typeof itemOrText === 'string' || itemOrText == null)
+        ? itemOrText
+        : itemOrText.text;
+    const normalized = normalizeMenuText(text);
+    const m = normalized.match(/^(\d+(?:\.\d+)*)\s+Flash\b/i);
+    return m ? `${m[1]} Flash` : (normalized || DEFAULT_FLASH_MODEL.displayName);
+}
+
+function pickNewestFullFlash(items) {
+    if (!Array.isArray(items)) return null;
+    let best = null;
+    let bestVer = null;
+    for (const item of items) {
+        if (!item || !isDefaultFlashText(item.text)) continue;
+        const ver = parseLeadingModelVersion(item.text);
+        if (!ver) continue;
+        if (!best || compareModelVersions(ver, bestVer) > 0) {
+            best = item;
+            bestVer = ver;
+        }
+    }
+    return best;
 }
 
 function isSelectedGeminiModelItem(item) {
@@ -108,9 +158,10 @@ function isExtendedThinkingText(text) {
 
 function isDefaultFlashExtendedMenuState(items) {
     if (!Array.isArray(items)) return false;
-    return items.some(isDefaultFlashItem)
+    const newest = pickNewestFullFlash(items);
+    return !!(newest && isSelectedGeminiModelItem(newest)
         && items.some(item => isSelectedGeminiModelItem(item)
-            && isExtendedThinkingText(item && item.text));
+            && isExtendedThinkingText(item && item.text)));
 }
 
 /**
@@ -227,7 +278,7 @@ const MODEL_KEYWORDS = [
     'Pro', 'Flash', 'Thinking', 'Extended', 'Standard',
     'Advanced', 'Fast',
     '扩展', '延長', '延伸', '拡張', '思考', '模型', '模式', 'モデル',
-    '2.5', '3.0', '2.0', '3.5', '3.1', '3.6',
+    '2.5', '3.0', '2.0', '3.5', '3.1', '3.6', '3.7',
 ];
 
 /** L3 + pre-click guard: common non-model buttons to skip outright. */
@@ -986,13 +1037,14 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
 }
 
 /**
- * Switch Gemini to the exact default: 3.6 Flash + Extended Thinking.
- * Used as the default model and as the verified fallback when Pro Extended
- * is unavailable. Both independently selected menu rows are required.
+ * Switch Gemini to the newest full Flash item in the live verified menu
+ * plus Extended Thinking. Used as the default model and as the verified
+ * fallback when Pro Extended is unavailable. Both independently selected
+ * menu rows are required. Never Lite/Pro/Ultra or generic composer Flash.
  *
  * @param {Page} page — Playwright page on gemini.google.com
  * @param {(msg: string) => void} [onLog] — log callback
- * @returns {Promise<boolean>} true only when 3.6 Flash and Extended Thinking are active
+ * @returns {Promise<boolean>} true only when newest full Flash and Extended Thinking are active
  */
 async function ensureFlash(page, onLog) {
     const log = onLog || (() => {});
@@ -1007,8 +1059,8 @@ async function ensureFlash(page, onLog) {
     await waitForAppReady(page, log);
 
     // The composer only reports generic "Flash" / "Pro" text, which cannot
-    // distinguish 3.6 Flash from Flash-Lite. Always open the verified model
-    // menu and inspect its selected item before accepting the default target.
+    // distinguish a full Flash item from Flash-Lite. Always open the verified
+    // model menu and inspect its selected item before accepting the default.
     const peek = await peekModelButtonAria(page);
     if (peek) maybeCorrectLocale(peek.aria, log);
 
@@ -1025,32 +1077,33 @@ async function ensureFlash(page, onLog) {
         return false;
     }
 
-    // Step 2: Select the exact latest full Flash model — do NOT fall back to
-    // Flash-Lite or any generic Flash item. The product contract is 3.6 Flash.
+    // Step 2: Select the newest full Flash item actually in this menu — do
+    // NOT fall back to Flash-Lite, Pro, Ultra, or a generic Flash label.
     const menuItems = await readVisibleGeminiModelMenuItems(page);
-    const target = menuItems.find(item => isDefaultFlashText(item.text));
+    const target = pickNewestFullFlash(menuItems);
+    const chosenLabel = target ? flashMenuLabel(target) : DEFAULT_FLASH_MODEL.displayName;
     if (!target || !target.dataModeId) {
-        log(`gemini WARN: target model "${DEFAULT_FLASH_MODEL.displayName}" not found in verified model menu.`);
+        log(`gemini WARN: newest full Flash not found in verified model menu.`);
         await page.keyboard.press('Escape');
         return false;
     }
 
     try {
         await page.locator(`[data-mode-id="${target.dataModeId}"]`).first().click({ timeout: 3000 });
-        log(`gemini: selected target model "${DEFAULT_FLASH_MODEL.displayName}"`);
+        log(`gemini: selected target model "${chosenLabel}"`);
     } catch {
-        log(`gemini WARN: target model "${DEFAULT_FLASH_MODEL.displayName}" not clickable.`);
+        log(`gemini WARN: target model "${chosenLabel}" not clickable.`);
         await page.keyboard.press('Escape');
         return false;
     }
 
     // Step 3: Reopen the verified model menu and ensure Extended Thinking is
-    // enabled for 3.6 Flash. Google exposes this as an independent selected
-    // menu row; selecting the model alone is not the default-mode contract.
+    // enabled for the chosen full Flash. Google exposes this as an independent
+    // selected menu row; selecting the model alone is not the default contract.
     await page.waitForTimeout(750);
     const thinkingMenu = await openModelMenu(page, log, { budgetMs: 12_000, maxClicks: 3 });
     if (!thinkingMenu) {
-        log(`gemini WARN: could not reopen model menu to enable Extended Thinking for "${DEFAULT_FLASH_MODEL.displayName}".`);
+        log(`gemini WARN: could not reopen model menu to enable Extended Thinking for "${chosenLabel}".`);
         return false;
     }
     if (!(await ensureExtendedThinkingInOpenMenu(page, log))) {
@@ -1061,7 +1114,7 @@ async function ensureFlash(page, onLog) {
 
     // Step 4: Reopen the verified menu and poll the TWO independent selected
     // states. Composer aria "Flash 延伸思考" is useful diagnostics but cannot
-    // prove the exact 3.6 model; inspect the checked rows themselves.
+    // prove the exact newest full Flash; inspect the checked rows themselves.
     await page.waitForTimeout(750);
     // Reopen verification can spend up to the selector candidate wait budget
     // on a cold Angular toolbar, so do not give it a shorter outer deadline.
@@ -1073,7 +1126,7 @@ async function ensureFlash(page, onLog) {
         lastState = await readVisibleGeminiMenuState(page);
         await page.keyboard.press('Escape').catch(() => {});
         if (isDefaultFlashExtendedMenuState(lastState)) {
-            log(`gemini: verified default state "${DEFAULT_FLASH_MODEL.displayName}" + Extended Thinking.`);
+            log(`gemini: verified default state "${chosenLabel}" + Extended Thinking.`);
             return true;
         }
         await page.waitForTimeout(350);
@@ -1090,6 +1143,9 @@ module.exports = {
     DEFAULT_FLASH_MODEL,
     isDefaultFlashText,
     isDefaultFlashItem,
+    pickNewestFullFlash,
+    parseLeadingModelVersion,
+    flashMenuLabel,
     isExtendedThinkingText,
     isDefaultFlashExtendedMenuState,
     isGeminiModelMenuItems,

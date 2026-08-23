@@ -1,5 +1,13 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-08-23 (v36) — Gemini 默认改为菜单感知的 newest full Flash（取代 v34 的 3.6 钉死）
+- **[P0] 菜单感知默认 Flash (`geminiModelSwitch.js`)**: 默认不再硬钉字面 **`3.6 Flash`**。`ensureFlash()` 在已验证的 Gemini 模型菜单中，于完整 Flash 候选项（`/\\bFlash\\b/i` 且不含 Lite/Pro/Ultra，且带前导版本号）里选取**版本号最新**的一项，再独立勾选 **延伸思考**。泛型 composer「Flash」、Flash-Lite、Pro、Ultra 一律拒绝。菜单里一个完整 Flash 都没有 → 与今日相同，返回 false / `ERR_MODEL_DEGRADED`
+- **[P0] zh_TW 不再因缺 3.6 误失败**: 实况菜单若已下架 3.6、只剩如 `2.5 Flash` + Lite/Pro/泛型 Flash，现会选中 `2.5 Flash` + 延伸思考，而不是因为找不到字面 3.6 就降级
+- **[P0] Pro 回退不变契约、只换目标**: `AGENTCHAT_GEMINI_MODEL=pro` 仍走 Pro Extended；Pro 不可用时回退到上述**已验证 newest full Flash + Extended Thinking**，不是任意 Flash
+- **[docs] SKILL.md + index.js**: 默认描述改为「菜单内最新完整 Flash + 延伸思考」，不再写死 3.6。v34 历史条目保留，本条明确宣布 3.6 pin 已被取代
+- **[test] `test_gemini_model_switch.js`**: 3.6 仍是合法完整 Flash 候选项；Lite/Pro/Ultra/泛型 Flash 仍拒绝；Lite+3.6+Pro 选 3.6；3.7+3.6 选 3.7；无 3.6 的 zh_TW fixture 选 2.5 Flash；延伸思考仍为 `isDefaultFlashExtendedMenuState` 必要条件
+
+
 ## 2026-08-13 (v35) — Chrome CDP 生命周期整合（共享引擎）
 - **[重构] 单一生命周期引擎 (`scripts/lib/chrome-debug-lifecycle.cjs` 新增)**: 旧的 Python Playwright daemon（`start-chrome-debug.py`，disconnect 即重启）已删除；`start-chrome-debug.sh` / `start-chrome.ps1` / `chrome-debug.sh` 变为兼容委托，全部转发到共享引擎。跨平台命令契约: `bash scripts/chrome-debug`（POSIX）或 `scripts\run-helper.cmd chrome-debug`（Windows，经 Git Bash）
 - **[行为] `lib/cdp.js` Tier-1 自动启动改走共享引擎**: `findStartScript()` 现返回 `run-helper.cmd`/`chrome-debug` 桥；默认一次性启动，仅 `AGENTCHAT_CHROME_DAEMON=1` 时追加 `--daemon`（显式 opt-in 监督模式）。内嵌启动器（Tier-2）保留为 skill-only 部署兜底
