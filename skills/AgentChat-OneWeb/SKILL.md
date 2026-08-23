@@ -1,11 +1,11 @@
 ---
 name: AgentChat-OneWeb
-description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT->Claude->Qwen->Kimi->MiniMax->MiMo->DeepSeek). Use for AI provider failover, fallback chain, multi-provider routing, or "send to any available AI". MANDATORY EXECUTION - invoking this skill REQUIRES running `node ~/.agents/skills/AgentChat-OneWeb/index.js "<prompt>"` as the FIRST action and quoting its `[receipt] AGENTCHAT_RUN` line in the final answer; explaining the skill or answering from model knowledge without a receipt is a violation.
+description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT->Claude->Qwen->Kimi->MiniMax->ChatGLM->Doubao->MiMo->DeepSeek). Use for AI provider failover, fallback chain, multi-provider routing, or "send to any available AI". MANDATORY EXECUTION - invoking this skill REQUIRES running `node ~/.agents/skills/AgentChat-OneWeb/index.js "<prompt>"` as the FIRST action and quoting its `[receipt] AGENTCHAT_RUN` line in the final answer; explaining the skill or answering from model knowledge without a receipt is a violation.
 ---
 
 # AI Fallback Chain — Multi-Provider CDP Bridge
 
-> **最后更新**: 2026-07-17
+> **最后更新**: 2026-08-09
 > **核心功能**: 按优先级链自动降级，确保始终有一个可用的大模型
 > **变更日志**: 见 [CHANGELOG.md](CHANGELOG.md)
 
@@ -41,6 +41,9 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js "<用户prompt>"
 
 ### 4. 例外
 仅限：`--smoke`、`--doctor`，或用户明确要求"只检查环境不发送"。这两种模式不产生 receipt，属预期行为。
+
+### 5. 本地上下文
+网页 AI 无法访问本地文件系统。涉及本地文件/代码/图片时，Claude Code 须先将内容读入 prompt 再发送，禁止只传文件路径。
 
 ## 📐 输出排版规范 — 最终回答强制格式
 
@@ -110,6 +113,96 @@ index.js 在收到 web AI 响应后，**自动执行**以下步骤：
 
 ---
 
+## 🖼️ 图片上传协议 (Image Upload Protocol)
+
+### 触发条件
+
+当用户请求涉及以下模式时，触发图片上传协议：
+
+* **明确上传指令**: 上传图片、传图、发图片、把图片发给AI、upload image、send image to AI
+* **图片路径引用**: 用户在消息中提及 `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.bmp` 等图片文件路径
+* **视觉分析请求**: 分析这张图、看看这张图片、describe this image、what's in this picture
+
+### 1. 自动识别图片路径（强制）
+
+当用户说"把图片上传给AI"或类似指令时，**必须**从用户消息中提取图片文件路径，然后使用 `--image-path` 标志：
+
+```bash
+node ~/.claude/skills/AgentChat-OneWeb/index.js --image-path="<图片绝对路径>" "<用户prompt>"
+```
+
+**路径解析规则**：
+* 用户提供的路径可能是相对路径（相对于当前工作目录 `$PWD`）或绝对路径
+* index.js 会自动将相对路径解析为绝对路径
+* 支持多次 `--image-path` 上传多张图片
+
+### 2. 粘贴流程（index.js 内置 — 无需人工操作）
+
+当 `--image-path` 被指定时，index.js 在 provider 管线中自动执行以下步骤：
+
+1. **读取图片文件**：从磁盘读取图片，转为 base64 编码，检测 MIME 类型
+2. **写入剪贴板**：通过 async Clipboard API（`navigator.clipboard.write`）将图片写入系统剪贴板
+3. **粘贴到对话框**：聚焦 AI 聊天输入框，按 `Ctrl+V` 粘贴图片
+4. **等待上传完成**：等待 2.5s 让 web UI 处理图片附件
+5. **输入提示词**：在图片粘贴完成后，输入用户的文本 prompt
+6. **发送**：点击发送按钮
+
+**备用路径**（当 Clipboard API 不可用时）：
+* 模拟 paste 事件：创建 `DataTransfer` 包含图片 `File` 对象，分发 `ClipboardEvent('paste')`
+* 最终兜底：将 `<img>` 标签注入 contenteditable 编辑器
+
+### 3. 支持的图片格式
+
+| 格式 | MIME Type | 扩展名 |
+|------|-----------|--------|
+| PNG | `image/png` | `.png` |
+| JPEG | `image/jpeg` | `.jpg`, `.jpeg` |
+| GIF | `image/gif` | `.gif` |
+| WebP | `image/webp` | `.webp` |
+| BMP | `image/bmp` | `.bmp` |
+| SVG | `image/svg+xml` | `.svg` |
+| TIFF | `image/tiff` | `.tiff`, `.tif` |
+| AVIF | `image/avif` | `.avif` |
+| ICO | `image/x-icon` | `.ico` |
+
+单文件上限 **50MB**。
+
+### 4. 使用示例
+
+```bash
+# 单张图片
+node ~/.claude/skills/AgentChat-OneWeb/index.js --image-path=./screenshot.png "分析这张截图的内容"
+
+# 多张图片
+node ~/.claude/skills/AgentChat-OneWeb/index.js \
+  --image-path=./before.png \
+  --image-path=./after.png \
+  "比较这两张图片的差异"
+
+# 指定 provider 上传
+node ~/.claude/skills/AgentChat-OneWeb/index.js \
+  --image-path=./photo.jpg \
+  --from=Gemini \
+  "描述这张照片"
+```
+
+### 5. AI Agent 调用规范
+
+当用户说"上传图片给AI"或类似指令时，调用 agent 必须：
+
+1. **识别图片路径**：从用户消息中提取图片文件路径
+2. **验证文件存在**：确认图片文件存在于用户系统中
+3. **构造命令**：使用 `--image-path=<绝对路径>` 标志
+4. **执行命令**：运行 `node ~/.claude/skills/AgentChat-OneWeb/index.js --image-path=... "prompt"`
+5. **引用 receipt**：按强制规则 §2 在最终回答中引用 `[receipt] AGENTCHAT_RUN` 行
+
+**禁止行为**：
+* ❌ 用 `--image` 代替 `--image-path`（前者是生图意图，后者是上传意图）
+* ❌ 先描述图片内容再用文本发给 AI——必须上传原始图片文件
+* ❌ 跳过 `--image-path` 只用文本描述图片
+
+---
+
 ## Trigger
 
 Use this skill when:
@@ -117,12 +210,14 @@ Use this skill when:
 - Gemini quota is known to be exhausted and a fallback is needed
 - The user wants automatic provider failover without manual switching
 - Running batch prompts where individual provider reliability matters
+- The user wants to upload an image to an AI chat (use `--image-path` flag)
 
 Do NOT use for: interactive conversations that need multi-turn context (each provider has independent session state).
 
 **When to use THIS skill**:
 - Multi-provider with automatic fallback. Use for reliability, batch processing, or when you don't care which AI answers.
 - For Gemini-specific Max reasoning depth, use `--from=Gemini` to force Gemini first in the chain.
+- For image upload: use `--image-path=<path>` to paste images into the chat before the prompt.
 
 ---
 
@@ -157,7 +252,7 @@ AGENTCHAT_ENV_FILE=/path/to/AgentChat/.env \
 ## Fallback Chain (Priority Order)
 
 ```
-Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → MiMo → DeepSeek
+Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
 (3.6 Flash + Extended Thinking default)                            (last resort)
 ```
 
@@ -247,6 +342,7 @@ curl -s http://127.0.0.1:9222/json/version | python3 -c "import json,sys; print(
 #    Qwen:    https://www.qianwen.com/?source=tongyigw
 #    Kimi:    https://kimi.moonshot.cn/
 #    MiniMax: https://agent.minimaxi.com/
+#    Doubao:  https://www.doubao.com/chat/
 ```
 
 ---
@@ -274,6 +370,10 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --doctor
 
 # 强制指定起始 provider (跳过前面的)
 node ~/.agents/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
+
+# 上传图片并提问（可重复 --image-path 上传多张）
+node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=./photo.png "描述这张图片"
+node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=a.png --image-path=b.jpg "比较这两张图片"
 ```
 
 ### CLI Flags
@@ -290,6 +390,7 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
 | `--doctor` | CDP 端口连通性检查 |
 | `--close` / `--close-browser` | 执行完毕后关闭所有 tab 和浏览器连接（默认保留） |
 | `--image` | 图片生成意图：index.js 进程内追加标准生图增强指令并记录 `image_prompt_enhanced` telemetry（见图片协议 §1） |
+| `--image-path=PATH` | 图片上传：读取本地图片文件，粘贴到 AI 聊天对话框后再发送 prompt（可重复使用多次以上传多张图片）。触发条件见图片上传协议 §4 |
 | `--no-download-images` | 禁用图片自动下载（默认启用，从响应中提取图片 URL 下载到当前工作目录） |
 
 > 未识别的 `--flag` 会打 `WARN` 日志后忽略（v14 起；此前静默丢弃，是 `--locale` 空转数月、`--keep-tabs` 曾被拼进 prompt 这一类 bug 的根源）。`--from=` / `--only=` 空值会以 exit 64 硬失败。`--only`/`--single` 下 provider 名必须**精确匹配** key 或显示名（子串匹配仅在级联路径作为人类便利保留）。
@@ -339,13 +440,14 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
 index.js
 ├── main()                    — CLI 入口，解析参数
 ├── tryAllProviders()         — 按链遍历 provider，返回第一个成功
-├── RUNNERS (factory-built)   — 8 provider runners via createProviderRunner()
+├── RUNNERS (factory-built)   — 9 provider runners via createProviderRunner()
 │   ├── gemini                — config: lib/providers/adapters/gemini.js
 │   ├── chatgpt               — config: lib/providers/adapters/chatgpt.js
 │   ├── claude                — config: lib/providers/adapters/claude.js
 │   ├── qwen                  — config: lib/providers/adapters/qwen.js
 │   ├── kimi                  — config: lib/providers/adapters/kimi.js
 │   ├── minimax               — config: lib/providers/adapters/minimax.js
+│   ├── doubao                — config: lib/providers/adapters/doubao.js
 │   ├── mimo                  — config: lib/providers/adapters/mimo.js
 │   └── deepseek              — config: lib/providers/adapters/deepseek.js
 ├── helpers/
@@ -379,6 +481,8 @@ index.js
 | **Qwen** | React SPA 3s 延迟、stop-btn detached 模式、模型名前缀剥离 | `adapters/qwen.js` |
 | **Kimi** | 每次调用新建会话、send-button-container disabled 检测、自适应稳定性窗口 (5-30s) | `adapters/kimi.js` |
 | **MiniMax** | TipTap/ProseMirror 异步挂载 4s 延迟、`<div aria-label="发送消息">` 非 button 发送 | `adapters/minimax.js` |
+| **ChatGLM** | 智谱清言 React SPA、中文 UI、agentic 工具/搜索阶段 stillWorkingCheck | `adapters/chatglm.js` |
+| **Doubao** | 字节跳动 React SPA、CSS Modules 哈希类名、agentic 工具/搜索阶段 stillWorkingCheck | `adapters/doubao.js` |
 | **MiMo** | React SPA 4s 延迟、DOM 遍历定位发送按钮 (无可靠 CSS selector) | `adapters/mimo.js` |
 | **DeepSeek** | 标准管线、ds-markdown 响应 | `adapters/deepseek.js` |
 

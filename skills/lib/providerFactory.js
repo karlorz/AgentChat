@@ -485,6 +485,133 @@ async function clearEditor(page, editor) {
 }
 
 /**
+ * v24: Paste image files into the AI chat editor via clipboard.
+ *
+ * Uses the async Clipboard API (navigator.clipboard.write) to copy an image
+ * to the system clipboard, then presses Ctrl+V to paste it into the focused
+ * editor. This is the most universal approach — all major AI chat UIs support
+ * pasting images from clipboard.
+ *
+ * Prerequisites:
+ *   - clipboard-write permission (already granted in ensureClipboardPermissions)
+ *   - The editor must be focused before calling
+ *
+ * @param {Page} page - Playwright page
+ * @param {Locator} editor - The editor element (for focus)
+ * @param {Array<{base64: string, mimeType: string, fileName: string}>} images
+ * @param {Function} log - Logger function
+ * @returns {Promise<boolean>} true if all images were pasted successfully
+ */
+async function pasteImagesToEditor(page, editor, images, log = () => {}) {
+    for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+        try {
+            // Step 1: Write image to system clipboard via async Clipboard API.
+            // The clipboard-write permission is already granted at context level.
+            const writeOk = await page.evaluate(async ({ base64, mimeType }) => {
+                try {
+                    const response = await fetch(`data:${mimeType};base64,${base64}`);
+                    const blob = await response.blob();
+                    await navigator.clipboard.write([
+                        new ClipboardItem({ [mimeType]: blob })
+                    ]);
+                    return true;
+                } catch (e) {
+                    // Clipboard API may fail if the page doesn't have focus
+                    // or if the browser blocks clipboard writes from scripts.
+                    return false;
+                }
+            }, { base64: img.base64, mimeType: img.mimeType }).catch(() => false);
+
+            if (!writeOk) {
+                log(`clipboard write failed for ${img.fileName} — trying fallback approach`);
+                // Fallback: use CDP to set clipboard content via page.evaluate
+                // with a direct DataTransfer-based paste simulation
+                const fallbackOk = await fallbackPasteImage(page, editor, img, log);
+                if (!fallbackOk) {
+                    log(`image paste failed for ${img.fileName} (both clipboard API and fallback)`);
+                    return false;
+                }
+            } else {
+                // Step 2: Focus the editor and paste from clipboard
+                await editor.focus();
+                await page.waitForTimeout(300);
+                await page.keyboard.press('ControlOrMeta+v');
+                // Step 3: Wait for the paste to register — image upload/attachment
+                // can take a moment for the UI to process
+                await page.waitForTimeout(2500);
+            }
+
+            log(`pasted image ${i + 1}/${images.length}: ${img.fileName} (${img.mimeType})`);
+        } catch (e) {
+            log(`failed to paste image ${img.fileName}: ${e.message}`);
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * v24: Fallback image paste — simulate a paste event with image data directly.
+ *
+ * Some provider UIs intercept paste events and read from event.clipboardData.
+ * This creates a synthetic paste event with the image in a DataTransfer, which
+ * bypasses the system clipboard entirely (no OS-level race, same as the
+ * inputViaSimulatedPaste approach for text).
+ *
+ * The image is fetched as a Blob from a data: URI, then wrapped in a File and
+ * dispatched via a synthetic paste event on the active element.
+ */
+async function fallbackPasteImage(page, editor, img, log = () => {}) {
+    try {
+        const result = await page.evaluate(async ({ base64, mimeType, fileName }) => {
+            // Convert base64 to Blob via fetch
+            const response = await fetch(`data:${mimeType};base64,${base64}`);
+            const blob = await response.blob();
+            const ext = mimeType.split('/')[1] || 'png';
+            const file = new File([blob], fileName || `image.${ext}`, { type: mimeType });
+
+            // Build DataTransfer with the image file
+            const dt = new DataTransfer();
+            dt.items.add(file);
+
+            // Dispatch paste event on the active element
+            const pasteEvent = new ClipboardEvent('paste', {
+                bubbles: true,
+                cancelable: true,
+                clipboardData: dt,
+            });
+
+            const target = document.activeElement || document.body;
+            const dispatched = target.dispatchEvent(pasteEvent);
+
+            return dispatched;
+        }, { base64: img.base64, mimeType: img.mimeType, fileName: img.fileName });
+
+        if (result) {
+            await page.waitForTimeout(2500); // wait for upload processing
+            return true;
+        }
+
+        // Fallback within fallback: try setting innerHTML to inject an <img> tag
+        // as a last resort for contenteditable editors
+        await editor.evaluate((el, { base64, mimeType }) => {
+            const dataUri = `data:${mimeType};base64,${base64}`;
+            const imgTag = document.createElement('img');
+            imgTag.src = dataUri;
+            imgTag.style.maxWidth = '300px';
+            el.appendChild(imgTag);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+        }, { base64: img.base64, mimeType: img.mimeType });
+
+        await page.waitForTimeout(1500);
+        return true;
+    } catch (e) {
+        log(`fallback paste also failed: ${e.message}`);
+        return false;
+    }
+}
+/**
  * v12: Detect Playwright's "the CDP target/context/browser went away" error
  * class. These are transport-level losses — they say NOTHING about whether
  * the action that preceded them reached the server.
@@ -742,11 +869,30 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
     // outer try/catch ever saw a rejection, so `break` ran unconditionally on
     // iteration 1). Fix: probe each selector for a short window first; only the
     // selector that actually matches gets the full detection sequence.
+    //
+    // v26 UNIVERSAL STOP-BUTTON COMPLETION: phase 1 now runs for ALL providers,
+    // not just those with configured stopSelectors. Adapters without explicit
+    // stopSelectors (Kimi, MiniMax, MiMo, DeepSeek) get a generic 4-selector
+    // fallback (en + zh aria-labels + testid). The stop button appearing then
+    // disappearing is the single most reliable "generation started → finished"
+    // signal across every provider's UI; stability-window-only completion was
+    // the #1 cause of premature "done" on bursty-thinking models.
     const stopMode = config.stopWaitMode || 'hidden';
     const stopExt = config.stopBtnExtensionMs || 0;
     const STOP_PROBE_TIMEOUT_MS = 3000;
-    if (stopSelectors && stopSelectors.length > 0) {
-        for (const sel of stopSelectors) {
+    // Adapter-specific list if present; otherwise generic fallback. Either way
+    // we probe; if no stop button ever shows (fast short answer) we fall
+    // through to phase 2/3 as before — this is a guard, not a hard gate.
+    const phase1Selectors = (stopSelectors && stopSelectors.length > 0)
+        ? stopSelectors
+        : [
+            'button[aria-label*="Stop" i]',
+            'button[aria-label*="stop" i]',
+            'button[aria-label*="停止"]',
+            '[data-testid="stop-button"]',
+        ];
+    // Always run phase 1 — universal across all 9 providers.
+    for (const sel of phase1Selectors) {
             const stopBtn = page.locator(sel).first();
 
             // Quick probe: did *this* selector's stop button actually show up?
@@ -790,9 +936,8 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
             }
             break; // handled the matching stop button — done with phase 1
         }
-        // If no selector ever matched, that's fine (e.g. a fast response that never
-        // showed a stop button) — fall through to phase 2 as before.
-    }
+    // If no selector ever matched, that's fine (e.g. a fast response that never
+    // showed a stop button) — fall through to phase 2 as before.
 
     // Phase 2: find response element
     //
@@ -963,15 +1108,49 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
                 // "working" (tool phase, bursty thinking). Only consulted
                 // here: its verdict was ignored on change anyway, so this
                 // also saves one CDP round-trip per changing poll.
-                const stillGen = await stillGeneratingCheck(page, {
+                let stillGen = await stillGeneratingCheck(page, {
                     text,
                     sinceChangeMs: now - lastRealChangeTime,
                     elapsedMs: now - startTime,
                 }).catch(() => false);
+                let fromStopBtn = false;
+
+                // v26 UNIVERSAL STOP-BUTTON GUARD: regardless of the
+                // adapter's stillGeneratingCheck, a visible stop button
+                // means generation IS still in progress (send button
+                // morphs into stop during generation). This catches
+                // bursty-thinking pauses that the stability window alone
+                // would misclassify as completion. Probes run concurrent
+                // (one CDP round-trip total).
+                //
+                // Tier 1: adapter-specific stopSelectors (precise).
+                // Tier 2: generic fallback for providers that haven't
+                //         configured stopSelectors (DeepSeek, Kimi, MiMo,
+                //         MiniMax as of 2026-08).  CSS4 `i` flag for
+                //         case-insensitive attr match covers en/zh UIs.
+                if (!stillGen) {
+                    const selList = (config.stopSelectors && config.stopSelectors.length > 0)
+                        ? config.stopSelectors
+                        : [
+                            'button[aria-label*="Stop" i]',
+                            'button[aria-label*="stop" i]',
+                            'button[aria-label*="停止"]',
+                            '[data-testid="stop-button"]',
+                        ];
+                    const flags = await Promise.all(
+                        selList.map(sel =>
+                            page.locator(sel).first().isVisible({ timeout: 250 }).catch(() => false)
+                        )
+                    );
+                    if (flags.some(Boolean)) {
+                        stillGen = true;
+                        fromStopBtn = true;
+                    }
+                }
 
                 if (stillGen && (now - lastRealChangeTime) < stillGenMaxHold) {
                     lastChangeTime = now; // reset clock — generation ongoing
-                    tick('⚙');
+                    tick(fromStopBtn ? '⏸' : '⚙');
                 } else {
                     tick('.');
                 }
@@ -1142,6 +1321,50 @@ async function collectResponseImages(responseEl, config) {
             }
 
             if (seen.has(src)) continue;
+
+            // v27 UI-DECORATION FILTER: walk ancestors looking for avatar /
+            // icon / logo containers vs markdown / prose content areas.
+            // Generated images live inside (or next to) text content; avatars
+            // and static CDN stickers live in dedicated chrome containers.
+            // Conservative: ambiguous ancestors → accept (don't drop real images).
+            let rejected = false;
+            {
+                let probe = img.parentElement;
+                while (probe && probe !== scope && probe !== document.body) {
+                    const cls = (probe.className || '').toString();
+                    // Decor container detected — reject
+                    if (/\b(?:avatar|icon|logo|badge|decor|thumbnail|sticker|watermark|sidebar|nav|header|footer)\b/i.test(cls)) {
+                        rejected = true; break;
+                    }
+                    // Content container detected — accept (overrides decor above)
+                    if (/(?:^|[\s_-])(?:markdown|prose|message-content|text-block|chat-content|segment-content|content-area)(?:$|[\s_-])/i.test(cls)) {
+                        rejected = false; break;
+                    }
+                    probe = probe.parentElement;
+                }
+            }
+            if (rejected) { skippedUncapturable++; continue; }
+
+            // v27 alt-text decor check: static decor images often carry bare
+            // "avatar" / "icon" / "logo" alt text (generated images don't).
+            {
+                const alt = String(img.alt || '').toLowerCase().trim();
+                if (/^(?:avatar|icon|logo|用户头像|头像|图标|logo|贴纸|user.?avatar)$/i.test(alt)) {
+                    skippedUncapturable++; continue;
+                }
+            }
+
+            // v27 URL decor check: static assets shipped with the page
+            // (logos, icons, activeimg templates) vs AI-generated content.
+            // Word-boundary match prevents substring hits inside content
+            // filenames.  activeimg = CN platform marketing asset dirs.
+            {
+                const urlLo = src.toLowerCase();
+                if (/\b(?:logo|logo-?dark|favicon|avatar|icon|activeimg)\b/i.test(urlLo)
+                    && !/dall[·e]|imagen|midjourney|generated|output|render/i.test(urlLo)) {
+                    skippedUncapturable++; continue;
+                }
+            }
 
             const rect = img.getBoundingClientRect();
             const w = Math.max(rect.width || 0, img.naturalWidth || 0);
@@ -1554,8 +1777,9 @@ function createProviderRunner(cfg) {
     // Merge defaults
     const C = { ...DEFAULTS, ...cfg };
 
-    return async function run(page, prompt, timeoutMs, ctx) {
+    return async function run(page, prompt, timeoutMs, ctx, opts = {}) {
         const provStart = Date.now();
+        const images = opts.images || [];
 
         // ── Step 1: Navigate ──
         try {
@@ -1746,6 +1970,27 @@ function createProviderRunner(cfg) {
             return classifyError(e, STAGES.INPUT, C.key);
         }
 
+        // ── Step 5.9: Paste images (v24) ──
+        // Paste image files into the chat BEFORE the text prompt.
+        // Uses async Clipboard API → Ctrl+V; falls back to simulated paste event.
+        // Images are pasted as attachments; the text editor remains separate in
+        // most UIs, so the clear + input step below is unaffected.
+        if (images.length > 0) {
+            try {
+                const imagesOk = await pasteImagesToEditor(
+                    page, editor, images, (m) => flog(C.key, m)
+                );
+                if (!imagesOk) {
+                    return classifyError(
+                        new Error('Failed to paste image(s) into chat editor'),
+                        STAGES.INPUT, C.key, 'error'
+                    );
+                }
+            } catch (e) {
+                return classifyError(e, STAGES.INPUT, C.key);
+            }
+        }
+
         // ── Step 6: Clear + input text ──
         // Stage label fixed: input failures were previously mislabeled EDITOR_FIND,
         // skewing telemetry-based failure analysis.
@@ -1770,6 +2015,15 @@ function createProviderRunner(cfg) {
         // React re-render glitches. Normalize both strings (collapse whitespace,
         // first 80 chars) and require the prompt prefix to be present in the
         // editor content. Fail-fast on mismatch — the prompt has NOT been sent.
+        //
+        // v25 MARKDOWN-STRIPPED FALLBACK: React ProseMirror editors (ChatGPT,
+        // Claude, Qwen, …) silently strip Markdown list markers during paste.
+        // Before declaring mismatch, strip those tokens from BOTH sides and
+        // re-check.  Key: strip FIRST, then slice the needle — slicing an
+        // 80-char window that ends mid-list-marker (e.g. "...特征 2") leaves a
+        // dangling partial marker that can never match the editor's stripped
+        // text, defeating the fallback.  Stripping the full prompt first and
+        // then taking a fresh prefix avoids that boundary artifact.
         try {
             const _editorText = await editor.evaluate(el => {
                 // Prefer value for TEXTAREA/INPUT, innerText for contenteditable
@@ -1778,18 +2032,32 @@ function createProviderRunner(cfg) {
                 return raw.replace(/\s+/g, ' ').trim();
             });
             const _normPrompt = String(prompt || '').replace(/\s+/g, ' ').trim();
-            // Check: the first 80 non-whitespace chars of the prompt must appear
-            // somewhere in the editor text. Using prefix rather than full text
-            // because React editors may truncate/collapse long payloads at render.
             const _needle = _normPrompt.slice(0, 80);
             if (_needle.length >= 20 && !_editorText.includes(_needle)) {
-                flog(C.key,
-                    `COMPOSER MISMATCH: expected prefix "${_needle.slice(0, 60)}..." not found in editor ` +
-                    `(editor has ${_editorText.length} chars, starts with "${_editorText.slice(0, 60)}...")`);
-                return classifyError(
-                    new Error(`Composer content mismatch: prompt prefix not found in editor — likely CDP routing or clipboard race`),
-                    STAGES.INPUT, C.key, 'error'
-                );
+                // Strict match failed — rich-text editors may have stripped
+                // Markdown formatting. Strip list markers from BOTH sides,
+                // then take a fresh prefix from the STRIPPED prompt (avoids
+                // boundary artifacts where the 80-char window ends mid-marker).
+                // v26: strip list markers while PRESERVING the character that
+                // precedes them (whitespace, CJK punctuation, or start-of-string).
+                // $1 captures the preceding char so "：1. 首先" → "：首先" rather
+                // than eating the colon (which would produce " 首先").
+                const _stripMd = s => s.replace(/(^|[\s：。，！？；、])\d{1,2}[\.\)]\s*/g, '$1 ')
+                                       .replace(/(^|\s)[\*\-\+]\s*/g, '$1 ')
+                                       .replace(/\s+/g, ' ').trim();
+                const _needle2 = _stripMd(_normPrompt).slice(0, 60);
+                const _editor2 = _stripMd(_editorText);
+                if (_needle2.length >= 20 && !_editor2.includes(_needle2)) {
+                    flog(C.key,
+                        `COMPOSER MISMATCH: expected prefix "${_needle.slice(0, 60)}..." not found in editor ` +
+                        `(editor has ${_editorText.length} chars, starts with "${_editorText.slice(0, 60)}...")`);
+                    return classifyError(
+                        new Error(`Composer content mismatch: prompt prefix not found in editor — likely CDP routing or clipboard race`),
+                        STAGES.INPUT, C.key, 'error'
+                    );
+                }
+                // Stripped match succeeded — formatting-only difference (list
+                // markers stripped by rich-text editor), not a real mismatch.
             }
         } catch (e) {
             // Readback failure means the page/editor is gone — fail, don't send blind
@@ -1959,6 +2227,8 @@ module.exports = {
     inputViaClipboard,
     inputViaSimulatedPaste,
     inputViaKeyboard,
+    pasteImagesToEditor,
+    fallbackPasteImage,
     clearEditor,
     clickSend,
     waitForCompletion,

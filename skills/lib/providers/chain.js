@@ -18,6 +18,8 @@ const PROVIDER_CHAIN = [
     { key: 'qwen',     name: 'Qwen',     url: 'https://www.qianwen.com/?source=tongyigw', authDomains: ['qianwen.com/login', 'login.aliyun.com', 'signin.aliyun.com'] },
     { key: 'kimi',     name: 'Kimi',     url: 'https://www.kimi.com/',              authDomains: ['kimi.moonshot.cn/login', 'kimi.com/login', 'moonshot.cn/login'], tabHosts: ['kimi.moonshot.cn', 'kimi.com'] },
     { key: 'minimax',  name: 'MiniMax',  url: 'https://agent.minimaxi.com/',        authDomains: ['agent.minimaxi.com/login', 'minimax.com/login'] },
+    { key: 'chatglm',  name: 'ChatGLM',  url: 'https://chatglm.cn/main/alltoolsdetail?lang=zh', authDomains: ['chatglm.cn/login', 'account.chatglm.cn'] },
+    { key: 'doubao',   name: 'Doubao',   url: 'https://www.doubao.com/chat/',        authDomains: ['doubao.com/login', 'www.doubao.com/login'] },
     { key: 'mimo',     name: 'MiMo',     url: 'https://aistudio.xiaomimimo.com/',   authDomains: ['aistudio.xiaomimimo.com/login', 'auth0.com'] },
     { key: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/',         authDomains: ['chat.deepseek.com/login', 'deepseek.com/login'] },
 ];
