@@ -307,7 +307,7 @@ async function probeClaudeSend(page, snap) {
 function detachBrowser(browser) {
     if (!browser) return;
     try { browser.removeAllListeners('disconnected'); } catch (_) {}
-    // Detach the Playwright guest only. NEVER browser.close() — that logs
+    // Detach the Playwright guest only. NEVER close the shared browser — that logs
     // CRITICAL CDP drop and can tear down the shared profile5 session.
     if (typeof browser.disconnect === 'function') {
         try { browser.disconnect(); } catch (_) {}
