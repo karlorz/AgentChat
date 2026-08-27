@@ -1,0 +1,14 @@
+{
+  "name": "agentchat-agentweb-setup",
+  "version": "1.0.0",
+  "description": "Slash command /agentweb-setup — detect provider sessions on an already-running Chrome and prompt login for anything not ready",
+  "main": "index.js",
+  "scripts": {
+    "test": "node test/test_classify.js",
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
