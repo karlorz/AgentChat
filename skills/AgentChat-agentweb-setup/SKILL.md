@@ -62,8 +62,8 @@ Statuses are first-class (authDomains-only is **not** enough):
 | Status | Meaning |
 |--------|---------|
 | `ready` | Signed in, composer usable, no blocking sidebar/org signals (2026-08-27 pass: Gemini + ChatGPT PONG) |
-| `logged_out` | Login wall / sidebar 未登录 or 登录 / auth URL / signed-out landing. Composer alone is not enough (2026-08-27 live: ChatGLM). |
-| `org_disabled` | Signed in but send is a no-op — "This organization has been disabled", even if a composer is visible (2026-08-27 live: Claude Free). |
+| `logged_out` | Login wall / sidebar 未登录 or 登录 / Access Verification captcha / guest composer + 登录 or Log in / auth URL. Composer alone is not enough. |
+| `org_disabled` | Signed in but send is a no-op. Toast may be absent — send-probe / org check required. Visible editor is not ready (2026-08-27 live: Claude Free). |
 | `quota` | Rate-limit / quota banner |
 | `region_block_until_login` | Region interstitial that asks the user to log in first. **Required** for any provider that shows it. |
 

@@ -33,10 +33,19 @@ const claude = PROVIDER_CHAIN.find(p => p.key === 'claude');
 const chatglm = PROVIDER_CHAIN.find(p => p.key === 'chatglm');
 const gemini = PROVIDER_CHAIN.find(p => p.key === 'gemini');
 const chatgpt = PROVIDER_CHAIN.find(p => p.key === 'chatgpt');
+const qwen = PROVIDER_CHAIN.find(p => p.key === 'qwen');
+const kimi = PROVIDER_CHAIN.find(p => p.key === 'kimi');
+const deepseek = PROVIDER_CHAIN.find(p => p.key === 'deepseek');
+const minimax = PROVIDER_CHAIN.find(p => p.key === 'minimax');
+const mimo = PROVIDER_CHAIN.find(p => p.key === 'mimo');
 
 const doubaoHtml = fs.readFileSync(path.join(FIX, 'doubao-region-ban.html'), 'utf8');
 const claudeHtml = fs.readFileSync(path.join(FIX, 'claude-org-disabled.html'), 'utf8');
+const claudeSilentHtml = fs.readFileSync(path.join(FIX, 'claude-silent-noop.html'), 'utf8');
 const glmHtml = fs.readFileSync(path.join(FIX, 'chatglm-logged-out.html'), 'utf8');
+const glmCaptchaHtml = fs.readFileSync(path.join(FIX, 'chatglm-captcha.html'), 'utf8');
+const qwenGuestHtml = fs.readFileSync(path.join(FIX, 'qwen-guest-login.html'), 'utf8');
+const kimiGuestHtml = fs.readFileSync(path.join(FIX, 'kimi-guest-login.html'), 'utf8');
 const geminiHtml = fs.readFileSync(path.join(FIX, 'ready-gemini.html'), 'utf8');
 const REGION_BAN_URL = 'https://www.doubao.com/security/doubao-region-ban?source=1';
 
@@ -216,6 +225,109 @@ const usage = spawnSync(process.execPath, [cli, '--dry-detect'], {
 });
 ok(usage.status === 64, 'CLI --dry-detect without fixtures exits 64', String(usage.status));
 
+console.log('── Claude silent no-op (no toast) ──');
+r = classifySession({
+    url: 'https://claude.ai/new',
+    title: 'New chat - Claude',
+    html: claudeSilentHtml,
+    text: 'Claude New Projects karl · Free Free plan Upgrade Evening, karl',
+    hasEditor: true,
+}, claude);
+ok(r.status === STATUSES.ORG_DISABLED,
+    'Claude silent no-op (no toast, editor visible) -> org_disabled', r.status + ' ' + r.evidence);
+ok(r.ready === false, 'Claude silent no-op is not ready');
+ok(!/this organiz?ation has been disabled/i.test(claudeSilentHtml),
+    'silent-noop fixture has NO org-disabled toast');
+
+r = classifySession({
+    url: 'https://claude.ai/new',
+    text: 'Evening, karl',
+    hasEditor: true,
+    sendNoop: true,
+    sendNoopReason: 'send-probe no-op',
+}, claude);
+ok(r.status === STATUSES.ORG_DISABLED, 'Claude send-probe no-op -> org_disabled', r.status);
+
+r = classifySession({
+    url: 'https://claude.ai/new',
+    text: 'Evening, karl',
+    hasEditor: true,
+    sendOk: true,
+}, claude);
+ok(r.status === STATUSES.READY, 'Claude sendOk + editor -> ready', r.status);
+
+r = classifySession({
+    url: 'https://claude.ai/new',
+    text: 'Evening, karl',
+    hasEditor: true,
+    orgHealthy: true,
+}, claude);
+ok(r.status === STATUSES.READY, 'Claude orgHealthy + editor -> ready', r.status);
+
+console.log('── ChatGLM captcha / Access Verification ──');
+r = classifySession({
+    url: 'https://chatglm.cn/main/alltoolsdetail?lang=zh',
+    title: 'Access Verification',
+    html: glmCaptchaHtml,
+    text: 'Access Verification Slide to verify 请完成验证后登录',
+    buttons: ['登录'],
+    hasEditor: true,
+}, chatglm);
+ok(r.status === STATUSES.LOGGED_OUT, 'ChatGLM Access Verification captcha -> logged_out', r.status + ' ' + r.evidence);
+ok(/captcha/i.test(r.evidence), 'ChatGLM captcha evidence mentions captcha', r.evidence);
+
+r = classifySession({
+    url: 'https://chatglm.cn/main/alltoolsdetail?lang=zh',
+    text: 'ChatGLM',
+    hasEditor: true,
+    captcha: true,
+}, chatglm);
+ok(r.status === STATUSES.LOGGED_OUT, 'ChatGLM captcha flag + editor -> logged_out', r.status);
+
+console.log('── Qwen / Kimi guest composer + login button ──');
+r = classifySession({
+    url: 'https://www.qianwen.com/?source=tongyigw',
+    html: qwenGuestHtml,
+    text: '登录 有什么我能帮你的吗？',
+    buttons: ['登录'],
+    hasEditor: true,
+}, qwen);
+ok(r.status === STATUSES.LOGGED_OUT, 'Qwen guest composer + 登录 -> logged_out', r.status + ' ' + r.evidence);
+
+r = classifySession({
+    url: 'https://www.kimi.com/',
+    html: kimiGuestHtml,
+    text: 'Log in Hi, I am Kimi.',
+    buttons: ['Log in'],
+    hasEditor: true,
+}, kimi);
+ok(r.status === STATUSES.LOGGED_OUT, 'Kimi guest composer + Log in -> logged_out', r.status + ' ' + r.evidence);
+
+console.log('── DeepSeek /sign_in, MiniMax, MiMo logged_out ──');
+r = classifySession({
+    url: 'https://chat.deepseek.com/sign_in',
+    text: '',
+    hasEditor: false,
+}, deepseek);
+ok(r.status === STATUSES.LOGGED_OUT, 'DeepSeek /sign_in -> logged_out', r.status);
+ok(isAuthUrl('https://chat.deepseek.com/sign_in', deepseek), 'DeepSeek /sign_in is an auth URL');
+
+r = classifySession({
+    url: 'https://agent.minimaxi.com/login',
+    text: '登录',
+    buttons: ['登录'],
+    hasEditor: false,
+}, minimax);
+ok(r.status === STATUSES.LOGGED_OUT, 'MiniMax /login -> logged_out', r.status);
+
+r = classifySession({
+    url: 'https://aistudio.xiaomimimo.com/login',
+    text: '登录',
+    buttons: ['登录'],
+    hasEditor: false,
+}, mimo);
+ok(r.status === STATUSES.LOGGED_OUT, 'MiMo /login -> logged_out', r.status);
+
 console.log('── live-miss contracts (no Chrome) ──');
 const setupSrc = fs.readFileSync(cli, 'utf8');
 ok(!/browser\.close\s*\(/.test(setupSrc), 'CLI source never calls browser.close()');
@@ -236,5 +348,48 @@ ok(typeof detachBrowser === 'function', 'detachBrowser is exported');
 detachBrowser(null);
 ok(true, 'detachBrowser(null) is a no-op');
 
-console.log("\n" + pass + " passed, " + fail + " failed");
-process.exit(fail ? 1 : 0);
+let closed = false;
+let disconnected = false;
+const fakeBrowser = {
+    removeAllListeners() {},
+    close() { closed = true; },
+    disconnect() { disconnected = true; },
+};
+detachBrowser(fakeBrowser);
+ok(disconnected === true, 'detachBrowser calls disconnect()');
+ok(closed === false, 'detachBrowser never calls browser.close()');
+
+const { openOfficialInExistingChrome } = require(cli);
+
+(async () => {
+    const opened = [];
+    const fakeContext = {
+        newPage: async () => ({
+            goto: async (url, _opts) => { opened.push(url); },
+        }),
+    };
+    const didOpen = await openOfficialInExistingChrome(fakeContext, {
+        name: 'DeepSeek',
+        url: 'https://chat.deepseek.com/',
+    }, () => {});
+    ok(didOpen === true, 'openOfficialInExistingChrome returns true');
+    ok(opened.length === 1 && opened[0] === 'https://chat.deepseek.com/',
+        'no_tab opens official PROVIDER_CHAIN URL via context.newPage().goto',
+        JSON.stringify(opened));
+
+    const noPageCtx = {
+        newPage: async () => { throw new Error('newPage failed'); },
+    };
+    const failedOpen = await openOfficialInExistingChrome(noPageCtx, {
+        name: 'MiMo',
+        url: 'https://aistudio.xiaomimimo.com/',
+    }, () => {});
+    ok(failedOpen === false, 'openOfficialInExistingChrome returns false on newPage error');
+
+    console.log("\n" + pass + " passed, " + fail + " failed");
+    process.exit(fail ? 1 : 0);
+})().catch((e) => {
+    console.log('  FAIL async openOfficial tests — ' + e.message);
+    console.log("\n" + pass + " passed, " + (fail + 1) + " failed");
+    process.exit(1);
+});
