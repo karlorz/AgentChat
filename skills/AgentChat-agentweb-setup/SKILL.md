@@ -61,9 +61,9 @@ Statuses are first-class (authDomains-only is **not** enough):
 
 | Status | Meaning |
 |--------|---------|
-| `ready` | Signed in, composer usable (2026-08-27 pass: Gemini + ChatGPT PONG) |
-| `logged_out` | Login wall / 未登录 / auth URL / signed-out landing (2026-08-27 pass: ChatGLM) |
-| `org_disabled` | Signed in but send is a no-op — "This organization has been disabled" (2026-08-27 pass: Claude Free) |
+| `ready` | Signed in, composer usable, no blocking sidebar/org signals (2026-08-27 pass: Gemini + ChatGPT PONG) |
+| `logged_out` | Login wall / sidebar 未登录 or 登录 / auth URL / signed-out landing. Composer alone is not enough (2026-08-27 live: ChatGLM). |
+| `org_disabled` | Signed in but send is a no-op — "This organization has been disabled", even if a composer is visible (2026-08-27 live: Claude Free). |
 | `quota` | Rate-limit / quota banner |
 | `region_block_until_login` | Region interstitial that asks the user to log in first. **Required** for any provider that shows it. |
 
@@ -79,7 +79,7 @@ node skills/AgentChat-agentweb-setup/index.js --json
 node skills/AgentChat-agentweb-setup/index.js --dry-detect --fixtures=skills/AgentChat-agentweb-setup/test/fixtures/browser-pass-2026-08-27.json
 ```
 
-Live mode: attach CDP → scan PROVIDER_CHAIN tabs → print a classification table → for login-needed states, navigate the existing tab to the official PROVIDER_CHAIN URL (or print the URL if there is no tab) → emit receipt.
+Live mode: attach CDP → scan PROVIDER_CHAIN tabs → print a classification table → for login-needed states, navigate the existing tab to the official PROVIDER_CHAIN URL; if status is not ready AND there is no tab, **open a new tab** on that official URL in the already-running Chrome (never a second Chrome / :8737 / chrome-debug). Detach only — never `browser.close()` on the shared profile5 CDP. Then emit receipt.
 
 `--dry-detect` never opens Chrome. Use it in tests and when fixtures are passed.
 

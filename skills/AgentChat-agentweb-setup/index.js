@@ -48,7 +48,7 @@ function usage() {
         'Usage: node index.js [--dry-detect] [--fixtures=PATH] [--no-open] [--json]',
         '  --dry-detect          classify fixtures only; no live Chrome',
         '  --fixtures=PATH       JSON snapshot map/list (required-ish for --dry-detect)',
-        '  --no-open             do not navigate existing Chrome tabs to login URLs',
+        '  --no-open             do not open new tabs or navigate existing tabs to login URLs',
         '  --json                also print a machine JSON blob on stdout after the table',
         '',
         'Attach-only live mode uses CDP_HOST/CDP_PORT from skills/lib/cdp.js (.env).',
@@ -162,7 +162,36 @@ async function snapshotPage(page) {
                 if (vis(el)) { hasPassword = true; break; }
             }
             const text = ((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim().slice(0, 4000);
-            return { text, buttons, hasEditor, hasPassword, html: '' };
+            const htmlSrc = (document.documentElement && document.documentElement.innerHTML) || '';
+            let html = '';
+            if (/this organiz?ation has been disabled/i.test(htmlSrc) || /this organiz?ation has been disabled/i.test(text)) {
+                html = 'This organization has been disabled';
+            }
+            const sideNameEl = document.querySelector('.sidebar-user-name, .userInfoBar .sidebar-user-name, p.sidebar-user-name');
+            const sidebarUser = sideNameEl && vis(sideNameEl)
+                ? ((sideNameEl.innerText || '') + '').replace(/\s+/g, ' ').trim()
+                : '';
+            let sidebarLoggedOut = false;
+            if (/guest-avatar/i.test(htmlSrc) && /^(未登录|登录|登入|Sign in|Log ?in)$/i.test(sidebarUser)) {
+                sidebarLoggedOut = true;
+            }
+            for (const el of document.querySelectorAll('.userInfoBar, .sidebar-user-entry')) {
+                const t = ((el.innerText || '') + '').replace(/\s+/g, ' ').trim();
+                if (/未登录/.test(t) || /^(登录|登入)$/.test(sidebarUser)) { sidebarLoggedOut = true; break; }
+            }
+            if (/sidebar-user-name[^>]*>\s*(登录|未登录|登入)\s*</i.test(htmlSrc)) {
+                sidebarLoggedOut = true;
+                if (!html) html = '<p class="sidebar-user-name">' + (sidebarUser || '登录') + '</p>';
+            }
+            let captcha = false;
+            if (/access verification/i.test(text) || /滑动验证/.test(text) || /安全验证/.test(text) || /slide to verify/i.test(text)) {
+                captcha = true;
+            }
+            if (document.querySelector('[class*="captcha"], [id*="captcha"], iframe[src*="captcha"]')) {
+                captcha = true;
+            }
+            if (captcha && !html) html = 'Access Verification';
+            return { text, buttons, hasEditor, hasPassword, html, sidebarUser, sidebarLoggedOut, captcha };
         });
     } catch (_) { /* navigation race — classify from URL only */ }
     return {
@@ -173,8 +202,132 @@ async function snapshotPage(page) {
         hasEditor: !!body.hasEditor,
         hasPassword: !!body.hasPassword,
         html: body.html || '',
+        sidebarUser: body.sidebarUser || '',
+        sidebarLoggedOut: !!body.sidebarLoggedOut,
+        captcha: !!body.captcha,
         present: true,
     };
+}
+
+/**
+ * Claude 2026-08-27 live: composer stays visible while send is a no-op
+ * ("This organization has been disabled"). The banner is often absent;
+ * /api/organizations.api_disabled_reason on the chat org is the signal.
+ * Never logs emails / org names / uuids.
+ */
+async function enrichClaudeOrg(page, snap) {
+    try {
+        const info = await page.evaluate(async () => {
+            const r = await fetch('/api/organizations', { credentials: 'include' });
+            if (!r.ok) return { ok: false };
+            const orgs = await r.json();
+            if (!Array.isArray(orgs) || !orgs.length) return { ok: false };
+            const chat = orgs.find(o => Array.isArray(o.capabilities) && o.capabilities.includes('chat')) || orgs[0];
+            const reason = chat && chat.api_disabled_reason;
+            if (reason && reason !== 'out_of_credits') return { ok: true, reason: String(reason) };
+            return { ok: true, healthy: true };
+        });
+        if (info && info.reason) snap.orgDisabledReason = info.reason;
+        else if (info && info.healthy) snap.orgHealthy = true;
+    } catch (_) { /* classify from DOM only */ }
+    return snap;
+}
+
+/**
+ * Send-probe that never delivers a chat turn: intercept Claude POST
+ * completions, type a one-glyph marker, click Send, abort the request,
+ * then clear the composer. Silent no-op (no POST, no toast) => sendNoop.
+ */
+async function probeClaudeSend(page, snap) {
+    if (!page || snap.orgDisabledReason || snap.orgDisabled) {
+        if (snap.orgDisabledReason || snap.orgDisabled) snap.sendNoop = true;
+        return snap;
+    }
+    let attempted = 0;
+    const onRoute = async (route) => {
+        try {
+            const req = route.request();
+            const u = req.url();
+            const m = req.method();
+            if (m === 'POST' && /claude\.ai/i.test(u) && /\/api\//i.test(u)
+                && /(completion|append_message|chat_conversations|chat_messages)/i.test(u)) {
+                attempted += 1;
+                await route.abort('failed');
+                return;
+            }
+            await route.continue();
+        } catch (_) {
+            try { await route.continue(); } catch (__) {}
+        }
+    };
+    try {
+        await page.route('**/*', onRoute);
+        const result = await page.evaluate(async () => {
+            const editor = document.querySelector('.ProseMirror, div[role="textbox"], [contenteditable="true"]');
+            const send = document.querySelector('button[aria-label="Send message"], button[aria-label="Send Message"], button[aria-label="Send"]');
+            if (!editor || !send) return { missing: true };
+            try {
+                editor.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('insertText', false, '\u00b7');
+            } catch (_) {}
+            send.click();
+            await new Promise(r => setTimeout(r, 500));
+            const text = ((document.body && document.body.innerText) || '');
+            const toast = /this organiz?ation has been disabled/i.test(text);
+            try {
+                editor.focus();
+                document.execCommand('selectAll', false, null);
+                document.execCommand('delete', false, null);
+            } catch (_) {}
+            return { toast };
+        });
+        if (result && result.toast) {
+            snap.orgDisabled = true;
+            snap.sendNoop = true;
+            snap.sendNoopReason = 'toast after send-probe';
+        } else if (attempted > 0) {
+            snap.sendOk = true;
+        } else {
+            snap.sendNoop = true;
+            snap.sendNoopReason = 'send-probe no-op';
+        }
+    } catch (_) {
+        if (!snap.sendOk && !snap.orgHealthy) {
+            snap.sendNoop = true;
+            snap.sendNoopReason = snap.sendNoopReason || 'send-probe failed';
+        }
+    } finally {
+        try { await page.unroute('**/*', onRoute); } catch (_) {}
+    }
+    return snap;
+}
+
+/** Detach from the shared profile5 CDP. Do not call browser.close — that drops CDP. */
+function detachBrowser(browser) {
+    if (!browser) return;
+    try { browser.removeAllListeners('disconnected'); } catch (_) {}
+    // Detach the Playwright guest only. NEVER browser.close() — that logs
+    // CRITICAL CDP drop and can tear down the shared profile5 session.
+    if (typeof browser.disconnect === 'function') {
+        try { browser.disconnect(); } catch (_) {}
+    }
+}
+
+async function openOfficialInExistingChrome(context, provider, logFn) {
+    const url = provider.url;
+    const say = logFn || log;
+    try {
+        const page = await context.newPage();
+        say(`${provider.name}: no tab — opening official URL in existing Chrome: ${url}`);
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch((e) => {
+            say(`${provider.name}: goto failed (${e.message}); URL is ${url}`);
+        });
+        return true;
+    } catch (e) {
+        say(`${provider.name}: open new tab failed — ${e.message}; URL ${url}`);
+        return false;
+    }
 }
 
 function pad(s, n) {
@@ -208,7 +361,7 @@ function suggestLines(rows) {
         } else if (r.status === STATUSES.REGION_BLOCK_UNTIL_LOGIN) {
             lines.push(`  - ${name}: region_block_until_login — open ${url} and log in (gate may lift; re-run /agentweb-setup).`);
         } else if (r.status === STATUSES.NO_TAB) {
-            lines.push(`  - ${name}: no tab — official URL: ${url}`);
+            lines.push(`  - ${name}: no tab — opening official URL in the existing Chrome: ${url}`);
         } else {
             lines.push(`  - ${name}: ${r.status} — open ${url}`);
         }
@@ -260,7 +413,7 @@ async function classifyLive(opts, ctx) {
         log('CDP reachable but no browser context exists.');
         ctx.statuses = Object.fromEntries(PROVIDER_CHAIN.map(p => [p.key, STATUSES.NO_TAB]));
         ctx.notReady = PROVIDER_CHAIN.map(p => p.key);
-        try { await browser.close(); } catch (_) {}
+        detachBrowser(browser);
         finish(ctx, 1, { error: 'no_context' });
     }
 
@@ -272,6 +425,10 @@ async function classifyLive(opts, ctx) {
             snap = { present: false };
         } else {
             snap = await snapshotPage(page);
+            if (provider.key === 'claude') {
+                snap = await enrichClaudeOrg(page, snap);
+                snap = await probeClaudeSend(page, snap);
+            }
         }
         const result = classifySession(snap, provider);
         rows.push({ provider, page, ...result });
@@ -283,7 +440,11 @@ async function classifyLive(opts, ctx) {
         for (const r of rows) {
             if (!LOGIN_NEEDED.has(r.status)) continue;
             if (r.status === STATUSES.NO_TAB) {
-                log(`${r.provider.name}: no tab — official URL ${r.provider.url}`);
+                // Not ready AND no tab → OPEN a new tab on the official URL
+                // in this already-running Chrome. Never start a second Chrome
+                // / :8737 / scripts/chrome-debug.
+                const opened = await openOfficialInExistingChrome(context, r.provider, log);
+                if (opened) openedLogin.push(r.provider.key);
                 continue;
             }
             // Reuse the existing provider tab. Never type credentials.
@@ -295,7 +456,8 @@ async function classifyLive(opts, ctx) {
                     });
                     openedLogin.push(r.provider.key);
                 } else {
-                    log(`${r.provider.name}: official URL ${r.provider.url}`);
+                    const opened = await openOfficialInExistingChrome(context, r.provider, log);
+                    if (opened) openedLogin.push(r.provider.key);
                 }
             } catch (e) {
                 log(`${r.provider.name}: open failed — ${e.message}; URL ${r.provider.url}`);
@@ -303,8 +465,8 @@ async function classifyLive(opts, ctx) {
         }
     }
 
-    // Detach without closing the user's Chrome.
-    try { await browser.close(); } catch (_) {}
+    // Detach only. Leave the shared profile5 CDP (127.0.0.1:9227) attached.
+    detachBrowser(browser);
     return { rows, openedLogin, cdp: CDP_URL };
 }
 
@@ -403,5 +565,9 @@ module.exports = {
     classifySession,
     classifyMany,
     isProviderHost,
+    detachBrowser,
+    openOfficialInExistingChrome,
+    enrichClaudeOrg,
+    probeClaudeSend,
     DEFAULT_TOTAL_TIMEOUT,
 };

@@ -98,6 +98,54 @@ r = classifySession({
 }, chatglm);
 ok(r.status === STATUSES.LOGGED_OUT, 'ChatGLM logged-out copy -> logged_out', r.status);
 
+// Live miss 1: Claude composer visible, org-disabled in HTML only (not innerText).
+r = classifySession({
+    url: 'https://claude.ai/new',
+    title: 'New chat - Claude',
+    text: 'Claude New Projects Artifacts karl · Free Free plan Upgrade Evening, karl',
+    html: claudeHtml,
+    hasEditor: true,
+}, claude);
+ok(r.status === STATUSES.ORG_DISABLED, 'Claude org-disabled HTML + visible editor -> org_disabled', r.status + ' ' + r.evidence);
+ok(r.ready === false, 'Claude org-disabled is not ready even with editor');
+
+// Live miss 1b: banner absent; chat-org api_disabled_reason present.
+r = classifySession({
+    url: 'https://claude.ai/new',
+    text: 'Evening, karl Reply with only the word PONG',
+    hasEditor: true,
+    orgDisabledReason: 'trust_and_safety',
+}, claude);
+ok(r.status === STATUSES.ORG_DISABLED, 'Claude orgDisabledReason + editor -> org_disabled', r.status);
+
+// Live miss 2: ChatGLM composer + sidebar 登录 (not 未登录, not a <button>).
+r = classifySession({
+    url: 'https://chatglm.cn/main/alltoolsdetail?lang=zh',
+    html: glmHtml,
+    text: '新对话 学习搭子 登录 登录送积分好礼 ChatGLM 今天，有什么新想法？',
+    buttons: ['更多'],
+    hasEditor: true,
+    sidebarUser: '登录',
+    sidebarLoggedOut: true,
+}, chatglm);
+ok(r.status === STATUSES.LOGGED_OUT, 'ChatGLM composer + sidebar 登录 -> logged_out', r.status + ' ' + r.evidence);
+
+r = classifySession({
+    url: 'https://chatglm.cn/main/alltoolsdetail?lang=zh',
+    html: '<div class="userInfoBar"><div class="sidebar-avatar guest-avatar"></div><p class="sidebar-user-name">登录</p></div><textarea></textarea>',
+    text: '登录送积分好礼 ChatGLM',
+    hasEditor: true,
+}, chatglm);
+ok(r.status === STATUSES.LOGGED_OUT, 'ChatGLM html-only sidebar-user-name 登录 + editor -> logged_out', r.status);
+
+r = classifySession({
+    url: 'https://chatglm.cn/main/alltoolsdetail?lang=zh',
+    text: '未登录 ' + 'x'.repeat(1600),
+    html: '<span>未登录</span><textarea></textarea>',
+    hasEditor: true,
+}, chatglm);
+ok(r.status === STATUSES.LOGGED_OUT, 'ChatGLM 未登录 + long text + editor still logged_out', r.status);
+
 r = classifySession({
     url: 'https://chatglm.cn/login',
     text: '',
@@ -167,6 +215,26 @@ const usage = spawnSync(process.execPath, [cli, '--dry-detect'], {
     encoding: 'utf8', cwd: ROOT, env: Object.assign({}, process.env, { AGENTCHAT_NO_AUTOSTART: '1' }),
 });
 ok(usage.status === 64, 'CLI --dry-detect without fixtures exits 64', String(usage.status));
+
+console.log('── live-miss contracts (no Chrome) ──');
+const setupSrc = fs.readFileSync(cli, 'utf8');
+ok(!/browser\.close\s*\(/.test(setupSrc), 'CLI source never calls browser.close()');
+ok(/context\.newPage\s*\(/.test(setupSrc), 'CLI opens a new tab via context.newPage for no_tab');
+ok(/detachBrowser/.test(setupSrc), 'CLI detaches via detachBrowser');
+ok(!/chrome-debug/.test(setupSrc.split('openOfficialInExistingChrome')[1] || '') || /Never start/.test(setupSrc),
+    'no_tab path documents not starting chrome-debug');
+
+const { suggestLines, detachBrowser } = require(cli);
+const noTabRow = {
+    provider: { name: 'MiMo', url: 'https://aistudio.xiaomimimo.com/' },
+    status: STATUSES.NO_TAB,
+    loginUrl: 'https://aistudio.xiaomimimo.com/',
+};
+ok(/opening official URL in the existing Chrome/.test(suggestLines([noTabRow])),
+    'suggestLines says no_tab opens a tab in existing Chrome');
+ok(typeof detachBrowser === 'function', 'detachBrowser is exported');
+detachBrowser(null);
+ok(true, 'detachBrowser(null) is a no-op');
 
 console.log("\n" + pass + " passed, " + fail + " failed");
 process.exit(fail ? 1 : 0);

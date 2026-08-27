@@ -36,7 +36,30 @@ const LOGIN_NEEDED = new Set([
 const REGION_BAN_URL_RE = /\/security\/doubao-region-ban|doubao-region-ban|\/region-ban(?:\?|$|\/)/i;
 const REGION_BAN_TEXT_RE = /受区域限制，请先登录再使用豆包|受区域限制[\s\S]{0,80}请先登录|请先登录再使用豆包/;
 
-const ORG_DISABLED_RE = /this organization has been disabled/i;
+const ORG_DISABLED_RE = /this organiz?ation has been disabled/i;
+
+// ChatGLM 2026-08-27 live: sidebar-user-name is "登录" (or 未登录) with guest-avatar
+// while a composer is still visible. Composer is NOT enough.
+const SIDEBAR_LOGIN_NAME_RE = /^(未登录|登录|登入|Sign in|Log ?in)$/i;
+const SIDEBAR_USER_NAME_HTML_RE = /sidebar-user-name[^>]*>\s*(登录|未登录|登入)\s*</i;
+const HARD_LOGGED_OUT_RES = [
+    /未登录/,
+    /請先登入/,
+];
+
+// ChatGLM 2026-08-27 live: slide captcha "Access Verification" then login.
+// Composer may exist underneath; still NOT ready.
+const CAPTCHA_RES = [
+    /access verification/i,
+    /滑动验证/,
+    /請完成驗證/,
+    /请完成验证/,
+    /安全验证/,
+    /安全驗證/,
+    /human verification/i,
+    /slide to verify/i,
+    /\bcaptcha\b/i,
+];
 
 const QUOTA_RES = [
     /额度.*(?:已|用).*(?:完|尽|满)/i,
@@ -166,7 +189,16 @@ function normalizeSnapshot(raw) {
         buttons: buttons || [],
         hasEditor: !!snap.hasEditor,
         hasPassword: !!snap.hasPassword,
-        present: snap.present !== false && !!(snap.url || snap.html || snap.text),
+        sidebarUser: String(snap.sidebarUser || '').trim(),
+        sidebarLoggedOut: !!snap.sidebarLoggedOut,
+        orgDisabled: !!snap.orgDisabled,
+        orgDisabledReason: snap.orgDisabledReason ? String(snap.orgDisabledReason) : '',
+        orgHealthy: !!snap.orgHealthy,
+        sendOk: !!snap.sendOk,
+        sendNoop: !!snap.sendNoop,
+        sendNoopReason: snap.sendNoopReason ? String(snap.sendNoopReason) : '',
+        captcha: !!snap.captcha,
+        present: snap.present !== false && !!(snap.url || snap.html || snap.text || snap.orgDisabled || snap.orgDisabledReason || snap.sidebarUser || snap.captcha || snap.sendNoop || snap.sendOk),
     };
 }
 
@@ -203,21 +235,69 @@ function looksGeminiSignedOut(snap) {
         || /accounts\.google\.com\/(?:ServiceLogin|signin|AccountChooser)/i.test(snap.text || '');
 }
 
+function sidebarLoginState(snap) {
+    if (snap.sidebarLoggedOut) return 'sidebar logged-out';
+    if (snap.sidebarUser && SIDEBAR_LOGIN_NAME_RE.test(snap.sidebarUser)) {
+        return `sidebar user: ${snap.sidebarUser}`;
+    }
+    const html = snap.html || '';
+    if (SIDEBAR_USER_NAME_HTML_RE.test(html)) return 'sidebar-user-name login CTA';
+    if (/guest-avatar/i.test(html) && /sidebar-user-(?:name|entry|text)/i.test(html)) {
+        return 'guest-avatar sidebar';
+    }
+    return null;
+}
+
+function orgDisabledEvidence(snap) {
+    const hay = [snap.text, snap.html, snap.title, snap.orgDisabledReason].join('\n');
+    const hit = hay.match(ORG_DISABLED_RE);
+    if (hit) return hit[0];
+    if (snap.orgDisabled) return 'organization disabled';
+    if (snap.orgDisabledReason) return String(snap.orgDisabledReason);
+    return null;
+}
+
+function captchaBlocked(snap) {
+    if (snap.captcha) return 'captcha/blocked';
+    const hit = matchesAny(CAPTCHA_RES, snap.text) || matchesAny(CAPTCHA_RES, snap.html) || matchesAny(CAPTCHA_RES, snap.title);
+    return hit ? `captcha/blocked: ${hit}` : null;
+}
+
 function isLoggedOut(snap, provider) {
     if (isAuthUrl(snap.url, provider)) return 'auth url';
     if (snap.hasPassword) return 'visible password input';
+    const cap = captchaBlocked(snap);
+    if (cap) return cap;
     if (looksGeminiSignedOut(snap)) return 'gemini signed-out landing';
+    // Sidebar login CTA beats a visible composer (ChatGLM 未登录 / 登录).
+    const side = sidebarLoginState(snap);
+    if (side) return side;
+    const hardHit = matchesAny(HARD_LOGGED_OUT_RES, snap.text) || matchesAny(HARD_LOGGED_OUT_RES, snap.html);
+    if (hardHit) return `text: ${hardHit}`;
     const textHit = matchesAny(LOGGED_OUT_TEXT_RES, snap.text);
     if (textHit) {
         // Long chat transcripts that merely discuss login are not walls.
+        // Do NOT apply this exception to sidebar status tokens (未登录).
         if (snap.hasEditor && snap.text.length > 1500) return null;
         return `text: ${textHit}`;
     }
-    if (hasLoginButton(snap) && !snap.hasEditor) return 'login button, no editor';
-    if (!snap.hasEditor && isProviderHost(snap.url, provider) && hasLoginButton(snap)) {
-        return 'login button on provider host';
-    }
+    // Qwen / Kimi 2026-08-27 live: guest composer works AND 登录 / Log in
+    // is still shown. Guest composer is NOT ready for full fallback.
+    if (hasLoginButton(snap)) return 'login button (guest composer is not ready)';
     return null;
+}
+
+/**
+ * Claude 2026-08-27 live: signed in as Free, composer visible, send is a
+ * silent no-op. There may be NO "This organization has been disabled" toast.
+ * Visible editor + no toast is NOT ready. Require sendOk (send-probe) or
+ * orgHealthy (account/org check).
+ */
+function claudeSendBlocked(snap, provider) {
+    if (!provider || provider.key !== 'claude') return null;
+    if (snap.sendNoop) return snap.sendNoopReason || 'send-probe no-op';
+    if (snap.sendOk || snap.orgHealthy) return null;
+    return 'claude send-probe/org check did not confirm send works';
 }
 
 /**
@@ -256,9 +336,10 @@ function classifySession(raw, providerOrKey) {
     }
 
     // 2. Org disabled (Claude Free / disabled workspace) — send is a no-op.
-    const orgHit = snap.text.match(ORG_DISABLED_RE);
+    // MUST beat visible-editor ready (live 2026-08-27: composer shown, send no-op).
+    const orgHit = orgDisabledEvidence(snap);
     if (orgHit) {
-        return done(STATUSES.ORG_DISABLED, orgHit[0]);
+        return done(STATUSES.ORG_DISABLED, orgHit);
     }
 
     // 3. Quota / rate-limit banners.
@@ -273,7 +354,14 @@ function classifySession(raw, providerOrKey) {
         return done(STATUSES.LOGGED_OUT, lo);
     }
 
-    // 5. Ready: visible composer, or provider-host tab with no blocking signals.
+    // 5. Claude silent no-op — MUST beat visible-editor ready.
+    // Do not treat visible editor + no toast as ready.
+    const claudeHit = claudeSendBlocked(snap, provider);
+    if (claudeHit) {
+        return done(STATUSES.ORG_DISABLED, claudeHit);
+    }
+
+    // 6. Ready: visible composer, or provider-host tab with no blocking signals.
     if (snap.hasEditor) {
         return done(STATUSES.READY, 'visible chat editor');
     }
@@ -307,4 +395,9 @@ module.exports = {
     stripHtml,
     extractButtonsFromHtml,
     normalizeSnapshot,
+    sidebarLoginState,
+    orgDisabledEvidence,
+    captchaBlocked,
+    claudeSendBlocked,
+    CAPTCHA_RES,
 };
