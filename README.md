@@ -24,6 +24,7 @@
 | **AgentChat-OneWeb** | 串行降级链 | 1个ai，7个替补。只使用一个你最喜欢的ai，免费额度耗尽自动切换，8-Provider 自动 fallback |代码 + 多模态 |
 | **AgentChat-IndependentTasks** | 并行编排 | 一次性触发8个ai。默认触发4个，可根据任务数量指定，如16个独立任务让8个Web 端分别执行两个任务 |大量高独立性任务|
 | **AgentChat-WebSubAgent** | 串行管道 | 核心Skill（架构图如下），6 步 AI 管道：你的Agent规划→Kimi 搜索→Gemini 推理→Agent 合成→ChatGPT或Claude 审查 | 深度推理 + 质量审查 |
+| **agentweb-setup** | 登录态检测 | 挂到已运行 Chrome，分类每个 provider 会话，引导登录未就绪项（Doubao 区域门 / Claude org-disabled） | `/agentweb-setup` |
 
 ---
 
@@ -65,6 +66,9 @@ bash scripts/chrome-debug      # 启动 Chrome（共享生命周期引擎，一�
 
 # 串行深度管道 — 规划→搜索→推理→合成→审查→修复
 /AgentChat-WebSubAgent 帮我设计一个高并发消息队列的架构方案
+
+# 检测已开 Chrome 里各网页 AI 登录态，引导补登
+/agentweb-setup
 ```
 
 ## 🧠 Claude Code Integration
@@ -88,6 +92,7 @@ node skills/AgentChat-OneWeb/index.js --smoke     # 遍历 8 个 provider
 node skills/AgentChat-OneWeb/index.js --doctor    # CDP 端口连通性检查
 node skills/AgentChat-IndependentTasks/index.js --smoke    # 并行编排环境检查
 node skills/AgentChat-WebSubAgent/index.js --doctor    # 串行管道环境检查
+node skills/AgentChat-agentweb-setup/index.js          # /agentweb-setup 登录态检测
 ```
 
 ---
@@ -127,6 +132,7 @@ AgentChat/
     │   ├── prompts.js                     #   DAG 拆解 prompt 模板
     │   └── providers/
     │       ├── chain.js                   #   Provider 优先级链（单一真相源）
+    │       ├── sessionState.js            #   /agentweb-setup 页面态分类
     │       └── adapters/                  #   8 个 provider config（"单源真相"）
     │           ├── gemini.js              #     Pro Extended + bursty 检测 + safety 过滤
     │           ├── chatgpt.js             #     3-tier 输入 + React send-btn 验证
@@ -145,9 +151,14 @@ AgentChat/
     ├── AgentChat-IndependentTasks/          # 并行编排器（DAG + 波次调度 + 证据仲裁）
     │   ├── SKILL.md                     # 🤖 AI 操作指南 + 角色分工
     │   └── index.js                     # 薄编排器（~710 行，零 provider 代码）
-    └── AgentChat-WebSubAgent/           # 串行 6 步管道
-        ├── SKILL.md                     # 🤖 AI 操作指南
-        └── index.js                     # 管道 helper（~160 行，零 provider 代码）
+    ├── AgentChat-WebSubAgent/           # 串行 6 步管道
+    │   ├── SKILL.md                     # 🤖 AI 操作指南
+    │   └── index.js                     # 管道 helper（~160 行，零 provider 代码）
+    └── AgentChat-agentweb-setup/        # /agentweb-setup 登录态检测
+        ├── SKILL.md
+        ├── index.js
+        ├── CHANGELOG.md
+        └── test/
 ```
 
 ---

@@ -1,0 +1,61 @@
+{
+  "gemini": {
+    "key": "gemini",
+    "url": "https://gemini.google.com/u/0/app",
+    "title": "Gemini",
+    "text": "Ask Gemini PONG",
+    "buttons": [
+      "Send"
+    ],
+    "hasEditor": true,
+    "present": true
+  },
+  "chatgpt": {
+    "key": "chatgpt",
+    "url": "https://chatgpt.com/c/6a8f4b0f-56c0-83e9-88f2-08d7cd4f137f",
+    "title": "Reply PONG",
+    "text": "Reply PONG",
+    "buttons": [
+      "Send"
+    ],
+    "hasEditor": true,
+    "present": true
+  },
+  "claude": {
+    "key": "claude",
+    "url": "https://claude.ai/new",
+    "title": "New chat - Claude",
+    "htmlFile": "claude-org-disabled.html",
+    "text": "Claude New Projects karl · Free Free plan Upgrade Evening, karl",
+    "hasEditor": true,
+    "orgDisabledReason": "trust_and_safety",
+    "present": true
+  },
+  "chatglm": {
+    "key": "chatglm",
+    "url": "https://chatglm.cn/main/alltoolsdetail?lang=zh",
+    "title": "智谱清言",
+    "htmlFile": "chatglm-logged-out.html",
+    "text": "新对话 学习搭子 登录 登录送积分好礼 ChatGLM 今天，有什么新想法？",
+    "buttons": [
+      "更多"
+    ],
+    "hasEditor": true,
+    "sidebarUser": "登录",
+    "sidebarLoggedOut": true,
+    "present": true
+  },
+  "doubao": {
+    "key": "doubao",
+    "url": "https://www.doubao.com/security/doubao-region-ban?source=1",
+    "title": "豆包",
+    "htmlFile": "doubao-region-ban.html",
+    "text": "受区域限制，请先登录再使用豆包。你也可以选择使用 Dola。",
+    "buttons": [
+      "使用 Dola",
+      "登录"
+    ],
+    "hasEditor": false,
+    "present": true
+  }
+}
