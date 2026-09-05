@@ -16,7 +16,7 @@ concurrency:
 
 env:
   BASE_BRANCH: master
-  UPSTREAM_BRANCH: main
+  UPSTREAM_BRANCH: master
   UPSTREAM_REPO_OWNER: ziwang-Physics
   UPSTREAM_REMOTE_URL: https://github.com/ziwang-Physics/AgentChat.git
 
