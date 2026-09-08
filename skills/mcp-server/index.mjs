@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * AgentChat MCP Server — 将 8 个 AI Provider 暴露为 MCP 工具。
+ * AgentChat MCP Server — 将 chain.js 上的 AI Provider 暴露为 MCP 工具。
  *
  * MCP 客户端 (Claude Desktop / Cursor / Continue.dev) 发现并调用这些工具，
  * 无需了解底层 Chrome CDP 细节。
@@ -27,9 +27,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { spawn } from "child_process";
+import { createRequire } from "module";
 import { fileURLToPath } from "url";
 import path from "path";
 import { z } from "zod";
+
+const require = createRequire(import.meta.url);
+const { PROVIDER_CHAIN } = require("../lib/providers/chain.js");
 
 // ── 配置 ──────────────────────────────────────────────────────────────────
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -200,22 +204,19 @@ server.tool(
 
 // ── 工具 3: web_ask — 指定 Provider 提问 ──────────────────────────────────
 
-const PROVIDER_NAMES = [
-    "gemini", "chatgpt", "claude", "qwen",
-    "kimi", "minimax", "mimo", "deepseek"
-];
+const PROVIDER_NAMES = /** @type {[string, ...string[]]} */ (PROVIDER_CHAIN.map(p => p.key));
 
 server.tool(
     "web_ask",
-    "通过 8 个 AI Provider 降级链提问。Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → MiMo → DeepSeek。默认 Gemini 开始，不可用自动降级。",
+    "通过 chain.js Provider 降级链提问。默认 Gemini 开始，不可用自动降级。",
     {
         prompt: z.string().describe("问题文本"),
-        provider: z.enum(["gemini","chatgpt","claude","qwen","kimi","minimax","mimo","deepseek"]).optional().describe("从哪个 Provider 开始，默认 gemini"),
+        provider: z.enum(PROVIDER_NAMES).optional().describe("从哪个 Provider 开始，默认 gemini"),
         timeout_ms: z.number().optional().describe("超时（毫秒），默认 600000"),
     },
     async ({ prompt, provider, timeout_ms }) => {
         const t = Number(timeout_ms) || DEFAULT_TIMEOUT;
-        const from = PROVIDER_NAMES.includes(provider) ? provider : "gemini";
+        const from = provider || "gemini";
         try {
             const result = await callWebext(prompt, {
                 from,

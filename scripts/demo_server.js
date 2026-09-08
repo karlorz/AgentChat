@@ -15,26 +15,28 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 
 // 会话上下文管理器 — 多轮对话降级时自动传递历史给 fallback Provider
 const { getContext, addTurn, generateSummary, clearSession, getSessionData } = require('./lib/session_context');
 // 共享 CDP 生命周期 — demo 服务器不再拥有独立的 Chrome 启动逻辑
 const cdp = require('../skills/lib/cdp.js');
+const { PROVIDER_CHAIN } = require('../skills/lib/providers/chain');
+const { productMap } = require('../skills/lib/providers/productMap');
+const { createExecutor } = require('../skills/lib/execute');
 
 const PORT = 3456;
 const PROJECT_DIR = path.resolve(__dirname, '..');
 const WEBEXT_INDEX = path.join(PROJECT_DIR, 'skills', 'AgentChat-OneWeb', 'index.js');
-const DEMO_HTML = path.join(PROJECT_DIR, 'demo', 'index.html');
-// 用已知的 Node.js 路径（Windows 上 PATH 不包含 node 时也能跑）
-const NODE_EXE = process.platform === 'win32'
-    ? path.join(process.env.LOCALAPPDATA || '', 'node-v24.18.0-win-x64', 'node.exe')
-    : 'node';
-if (!require('fs').existsSync(NODE_EXE)) {
-    // fallback to whatever is in PATH
-    process.env.NODE_EXE = 'node';
-} else {
-    process.env.NODE_EXE = NODE_EXE;
-}
+const NODE_EXE = process.execPath;
+const PROVIDER_KEYS = PROVIDER_CHAIN.map(p => p.key);
+const PRODUCT_MAP = productMap();
+
+const executor = createExecutor({
+    webextPath: WEBEXT_INDEX,
+    logPrefix: 'demo',
+    holdLockOnSuccess: false,
+});
 
 const MIME = {
     '.html': 'text/html; charset=utf-8',
@@ -76,135 +78,30 @@ async function ensureCdp(timeoutMs = 30000) {
     return false;
 }
 
-function cleanupBlankTabs() {
-    return new Promise((resolve) => {
-        // 关闭所有 about:blank 页面
-        http.get(`${CDP_URL}/json/list`, (res) => {
-            let data = '';
-            res.on('data', (c) => { data += c; });
-            res.on('end', () => {
-                try {
-                    const pages = JSON.parse(data);
-                    let closed = 0;
-                    pages.forEach((p) => {
-                        if (p.url === 'about:blank' && p.type === 'page') {
-                            http.get(`${CDP_URL}/json/close/${p.id}`, () => {}).end();
-                            closed++;
-                        }
-                    });
-                    if (closed > 0) console.log(`[demo] 已清理 ${closed} 个空白 tab`);
-                } catch (_) {}
-                resolve();
-            });
-        }).on('error', resolve).end();
-    });
-}
-
-// 关闭所有 AI 网站 tab（保留 about:blank — Chrome 需要至少一个 tab）
-// smoke check 和之前的请求会残留 tab，导致后续请求 tab_already_open
-function closeOldProviderTabs() {
-    return new Promise((resolve) => {
-        http.get(`${CDP_URL}/json/list`, (res) => {
-            let data = '';
-            res.on('data', (c) => { data += c; });
-            res.on('end', () => {
-                try {
-                    const pages = JSON.parse(data);
-                    let closed = 0;
-                    pages.forEach((p) => {
-                        // 只关 AI 网站 tab（包含已知域名），保留 about:blank
-                        const isAI = /gemini|chatgpt|claude|qianwen|kimi|minimax|mimo|deepseek/i.test(p.url);
-                        if (isAI && p.type === 'page') {
-                            http.get(`${CDP_URL}/json/close/${p.id}`, () => {}).end();
-                            closed++;
-                        }
-                    });
-                    if (closed > 0) console.log(`[demo] 已清理 ${closed} 个 AI 网站 tab`);
-                } catch (_) {}
-                resolve();
-            });
-        }).on('error', resolve).end();
-    });
-}
-
 async function callWebext(prompt, opts = {}) {
-    // 每次请求前清理旧的 AI 网站 tab（smoke check 残留等），避免 tab_already_open
-    await closeOldProviderTabs();
-
-    return new Promise((resolve, reject) => {
-        const args = [
-            WEBEXT_INDEX,
-            `--timeout=${opts.timeout || 600000}`,
-            `--timeout-per-provider=${opts.provTimeout || 120000}`,
-        ];
-        if (opts.from) args.push(`--from=${opts.from}`);
-        // 通过 CLI 参数传递 prompt（而非 stdin），避免跨平台编码问题
-        if (prompt) args.push(prompt);
-
-        const child = spawn(process.env.NODE_EXE || 'node', args, {
-            cwd: PROJECT_DIR,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-                ...process.env,
-                // 跳过 Pro Extended 模型切换：Pro 模式下 Angular 重新渲染
-                // 导致发送按钮事件失效。Flash 模式发送/接收均正常。
-                // 等上游修复 Pro 模式发送后再改回 'lenient'
-                AGENTCHAT_SKIP_MODEL_SWITCH: '1',
-            },
-        });
-
-        let stdout = '';
-        let stderr = '';
-
-        child.stdout.on('data', (d) => { stdout += d.toString(); });
-        child.stderr.on('data', (d) => { stderr += d.toString(); });
-
-        const timeout = setTimeout(() => {
-            child.kill();
-            reject(new Error('TIMEOUT'));
-        }, opts.timeout + 30000);
-
-        child.on('close', (code) => {
-            clearTimeout(timeout);
-            if (code === 0 && stdout.trim()) {
-                // 从 stderr 提取元数据
-                let provider = 'Unknown';
-                let model = '';
-                let timeMs = 0;
-                let chain = [];
-
-                for (const line of stderr.split('\n')) {
-                    const m = line.match(/✓\s*(\w+):\s*USED/i);
-                    if (m) provider = m[1];
-                    const t = line.match(/Fallback chain:\s*(.+)/);
-                    if (t) chain = t[1].split('→').map(s => s.trim()).filter(Boolean);
-                    const ms = line.match(/(\d+)ms\s*total/);
-                    if (ms) timeMs = parseInt(ms[1]);
-                }
-                if (stderr.includes('Pro Extended')) model = 'Pro Extended';
-                else if (stderr.includes('Flash')) model = 'Flash';
-
-                resolve({
-                    response: stdout.trim(),
-                    provider,
-                    model,
-                    timeMs: timeMs || (Date.now() - (timeMs || 0)),
-                    chain,
-                    success: true,
-                });
-            } else {
-                const lastLines = stderr.split('\n').filter(Boolean).slice(-3).join(' ');
-                reject(new Error(lastLines || `exit code ${code}`));
-            }
-        });
-
-        child.on('error', (e) => { clearTimeout(timeout); reject(e); });
-    });
+    let chain = PROVIDER_KEYS;
+    if (opts.from) {
+        const idx = PROVIDER_KEYS.indexOf(String(opts.from).toLowerCase());
+        if (idx >= 0) chain = PROVIDER_KEYS.slice(idx);
+    }
+    const result = await executor.runChain(chain, prompt, opts.timeout || 600000);
+    const provider = result.provider_used || '';
+    const fallback = result.degradation && result.degradation.fallback_chain;
+    return {
+        response: result.response || result.error || '',
+        provider,
+        model: '',
+        timeMs: result.elapsed_ms || 0,
+        chain: fallback
+            ? fallback.concat(provider ? [provider] : [])
+            : (provider ? [provider] : []),
+        success: !!result.success,
+    };
 }
 
 function callSmoke() {
     return new Promise((resolve) => {
-        const child = spawn(process.env.NODE_EXE || 'node', [WEBEXT_INDEX, '--smoke'], {
+        const child = spawn(NODE_EXE, [WEBEXT_INDEX, '--smoke'], {
             cwd: PROJECT_DIR,
             stdio: ['ignore', 'pipe', 'pipe'],
         });
@@ -213,19 +110,16 @@ function callSmoke() {
         child.on('close', () => {
             const providers = [];
             for (const line of stderr.split('\n')) {
-                // "  Gemini: ✅ REACHABLE (...)" or "  Gemini: tab already open → skipping"
                 let m = line.match(/(\w[\w\s]*):\s*(✅|❌|REACHABLE|UNREACHABLE|needs login)/i);
                 if (m) {
                     providers.push({ name: m[1].trim(), status: m[2].trim() });
                     continue;
                 }
-                // "  Gemini: tab already open → skipping" — means ready to use
                 m = line.match(/(\w[\w\s]*):\s*tab already open/i);
                 if (m) {
                     providers.push({ name: m[1].trim(), status: '✅ (tab ready)' });
                 }
             }
-            // 确保 8 provider 都有状态（漏掉的标记为 unknown）
             resolve(providers);
         });
     });
@@ -320,8 +214,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/smoke') {
         try {
             const providers = await callSmoke();
-            // 必须等 tab 清理完成再响应，否则降级链页面的后续 /api/ask 会遇到 tab_already_open
-            await closeOldProviderTabs();
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify(providers));
         } catch (e) {
@@ -339,6 +231,9 @@ const server = http.createServer(async (req, res) => {
             cdp: cdp.ok ? 'online' : 'offline',
             port: CDP_PORT,
             server: 'running',
+            providers: PRODUCT_MAP.providers,
+            skills: PRODUCT_MAP.skills,
+            languages: PRODUCT_MAP.languages,
         }));
         return;
     }
@@ -466,9 +361,9 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({
             cdp: cdp.ok ? 'online' : 'offline',
             port: CDP_PORT,
-            providers: 8,
-            skills: 6,
-            languages: 4,
+            providers: PRODUCT_MAP.providers.length,
+            skills: PRODUCT_MAP.skills.length,
+            languages: PRODUCT_MAP.languages.length,
             uptime: process.uptime(),
         }));
         return;

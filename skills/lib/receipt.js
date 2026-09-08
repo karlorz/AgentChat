@@ -99,4 +99,14 @@ function emitReceipt({ skillDir, skill, runId, fields = {}, stream = 'stderr' })
     return receipt;
 }
 
-module.exports = { makeRunId, emitReceipt };
+/**
+ * Parse the first `[receipt] AGENTCHAT_RUN {json}` line from a log blob.
+ * Returns the JSON object, or null if missing / malformed.
+ */
+function parseReceiptLine(text) {
+    const m = String(text || '').match(/\[receipt\] AGENTCHAT_RUN (\{.*\})/m);
+    if (!m) return null;
+    try { return JSON.parse(m[1]); } catch (_) { return null; }
+}
+
+module.exports = { makeRunId, emitReceipt, parseReceiptLine };

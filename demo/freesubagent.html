@@ -6,9 +6,9 @@
 @media(max-width:700px){.pane{grid-template-columns:1fr}}
 </style></head>
 <body>
-<nav class="topbar"><a href="index.html" class="brand">AgentChat</a><a href="architecture.html">架构</a><a href="webextended.html">降级链</a><a href="freesubagent.html" class="active">并行编排</a><a href="workflow.html">串行管道</a><a href="mcp.html">MCP Server</a><a href="python.html">Python SDK</a><a href="locales.html">多语言</a></nav>
+<nav class="topbar"><a href="index.html" class="brand">AgentChat</a><a href="architecture.html">架构</a><a href="webextended.html">降级链</a><a href="freesubagent.html" class="active">并行编排</a><a href="workflow.html">串行管道</a><a href="setup.html">登录检测</a><a href="mcp.html">MCP Server</a><a href="python.html">Python SDK</a><a href="locales.html">多语言</a></nav>
 <div class="container">
-<div class="hero" style="padding:40px 0 20px"><h1>⚡ AgentChat-<span>FreeSubAgent</span></h1><p class="sub">4 角色并行编排器 · 每个角色用不同的 AI 做不同维度分析</p></div>
+<div class="hero" style="padding:40px 0 20px"><h1>⚡ AgentChat-<span>IndependentTasks</span></h1><p class="sub">4 角色并行编排器 · 每个角色用不同的 AI 做不同维度分析</p></div>
 
 <div class="section">
   <h2>🎛️ 交互式演示</h2>
@@ -26,9 +26,9 @@
 <div class="section"><h2>架构说明</h2>
 <pre>Claude Code 拆任务 + 写 prompt → Node.js 并发派发 → 质量门 + 证据仲裁
     │
-    │  child_process.spawn('node', ['../AgentChat-WebExtended/index.js', '--from=X', prompt])
+    │  child_process.spawn('node', ['../AgentChat-OneWeb/index.js', '--from=X', prompt])
     ▼
-AgentChat-WebExtended (8 Providers 唯一实现)</pre>
+AgentChat-OneWeb (10 Providers 唯一实现)</pre>
 <div class="two-col"><div class="card" style="cursor:default"><h3>🔒 角色互补</h3><p>4 个角色做 4 个<strong>不同角度</strong>。同一个问题绝不发给两个 AI——资源的完全利用而非冗余。</p></div><div class="card" style="cursor:default"><h3>📋 质量门</h3><p>≥ 2 个有效响应才输出结果。单 worker 失败不影响其他 worker 的结果收集。</p></div></div>
 </div></div>
 

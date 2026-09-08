@@ -1,0 +1,28 @@
+<!DOCTYPE html><html lang="zh-CN">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>登录检测 — AgentChat</title><link rel="stylesheet" href="shared.css"></head>
+<body>
+<nav class="topbar"><a href="index.html" class="brand">AgentChat</a><a href="architecture.html">架构</a><a href="webextended.html">降级链</a><a href="freesubagent.html">并行编排</a><a href="workflow.html">串行管道</a><a href="setup.html" class="active">登录检测</a><a href="mcp.html">MCP Server</a><a href="python.html">Python SDK</a><a href="locales.html">多语言</a></nav>
+<div class="container">
+<div class="hero" style="padding:40px 0 20px"><h1>🔐 <span>agentweb-setup</span></h1><p class="sub">Attach-only 登录检测 · 不发送聊天 · 不关现有 tab</p></div>
+<div class="section">
+  <h2>做什么</h2>
+  <p>对已经在跑的 Chrome CDP 分类 chain.js 里每一个 Provider：<code>ready</code> / <code>logged_out</code> / <code>org_disabled</code> / <code>quota</code> / <code>region_block_until_login</code> / <code>no_tab</code>。</p>
+  <p style="margin-top:8px;color:var(--muted)">Never types passwords or 2FA. Default live classify should use <code>--no-open</code> so missing providers do not dump login tabs into the shared Chrome.</p>
+</div>
+<div class="section">
+  <h2>怎么跑</h2>
+<pre>cd AgentChat
+AGENTCHAT_NO_AUTOSTART=1 node skills/AgentChat-agentweb-setup/index.js --no-open --json</pre>
+  <p style="color:var(--muted);font-size:12px;margin-top:8px">Quote the <code>[receipt] AGENTCHAT_RUN</code> line. Re-run after you log in yourself.</p>
+</div>
+<div class="section">
+  <h2>chain.js providers</h2>
+  <p id="plist" style="color:var(--muted)">loading…</p>
+</div>
+</div>
+<script>
+(async()=>{try{const r=await fetch('/api/health');const d=await r.json();const list=(d.providers||[]).map(p=>p.name+' ('+p.key+')').join(' · ');document.getElementById('plist').textContent=list||'health has no providers'}catch(e){document.getElementById('plist').textContent='demo server not reachable'}})();
+</script>
+<footer>AgentChat · agentweb-setup · attach-only</footer>
+</body></html>

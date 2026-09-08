@@ -2,7 +2,7 @@
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
 <title>多语言 — AgentChat</title><link rel="stylesheet" href="shared.css"></head>
 <body>
-<nav class="topbar"><a href="index.html" class="brand">AgentChat</a><a href="architecture.html">架构</a><a href="webextended.html">降级链</a><a href="freesubagent.html">并行编排</a><a href="workflow.html">串行管道</a><a href="mcp.html">MCP Server</a><a href="python.html">Python SDK</a><a href="locales.html" class="active">多语言</a></nav>
+<nav class="topbar"><a href="index.html" class="brand">AgentChat</a><a href="architecture.html">架构</a><a href="webextended.html">降级链</a><a href="freesubagent.html">并行编排</a><a href="workflow.html">串行管道</a><a href="setup.html">登录检测</a><a href="mcp.html">MCP Server</a><a href="python.html">Python SDK</a><a href="locales.html" class="active">多语言</a></nav>
 <div class="container">
 <div class="hero" style="padding:40px 0 20px"><h1>🌐 <span>多语言选择器</span></h1><p class="sub">zh_CN / zh_TW / en / ja 四语言 profile · 自动检测 · fuzzy 回退</p></div>
 <div class="section"><h2>设计理念</h2><p>Gemini UI 根据 Google 账号语言显示不同文本。原代码硬编码繁体中文+英文，简体中文用户直接报错。新方案将所有语言文本集中到 <code>skills/lib/locales/gemini.js</code>，核心逻辑不再硬编码任何语言字符串。</p></div>
