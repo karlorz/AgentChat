@@ -419,7 +419,11 @@ const server = http.createServer(async (req, res) => {
     try {
         const content = fs.readFileSync(filePath);
         const ext = path.extname(filePath).toLowerCase();
-        res.writeHead(200, { 'Content-Type': MIME[ext] || 'text/plain' });
+        res.writeHead(200, {
+            'Content-Type': MIME[ext] || 'text/plain',
+            'Cache-Control': 'no-store, no-cache, must-revalidate',
+            'Pragma': 'no-cache',
+        });
         res.end(content);
     } catch {
         res.writeHead(404);

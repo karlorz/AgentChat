@@ -16,9 +16,185 @@
  *   - FIX: changed textarea selector to 'textarea:not(.wcDTda_fallbackTextarea)'
  */
 
-const { inputViaClipboard, inputViaSimulatedPaste, inputViaKeyboard, COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
+const { inputViaKeyboard, COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
 
-module.exports = {
+const THINK_LABEL_RE = /^(Think|思考)$/i;
+const WEB_SEARCH_CHIP_RE = /^(Web search|联网搜索|網頁搜尋|Search the web)$/i;
+const WEB_SEARCH_ITEM_RE = /^(Web search|联网搜索|網頁搜尋)\b/i;
+
+function classifyThinkPill({ text, ariaLabel, ariaPressed } = {}) {
+    const label = String(text || '').replace(/\s+/g, ' ').trim()
+        || String(ariaLabel || '').replace(/\s+/g, ' ').trim();
+    if (!THINK_LABEL_RE.test(label)) return { match: false, on: false, clickable: false };
+    const pressed = ariaPressed == null ? null : String(ariaPressed);
+    if (pressed === 'true') return { match: true, on: true, clickable: false };
+    if (pressed === 'false') return { match: true, on: false, clickable: true };
+    return { match: true, on: false, clickable: false };
+}
+
+function isWebSearchChipEl(el) {
+    if (!el) return false;
+    if (el.getAttribute && (
+        el.getAttribute('data-system-hint-type') === 'search'
+        || (el.getAttribute('data-id') === 'search' && el.hasAttribute('data-inline-selection-pill'))
+        || /^Web search$/i.test(el.getAttribute('data-keyword') || '')
+    )) return true;
+    const t = String(el.textContent || el.innerText || '').replace(/\s+/g, ' ').trim();
+    if (!WEB_SEARCH_CHIP_RE.test(t) || t.length >= 40) return false;
+    const cls = String(el.className || '');
+    return /text-token-text-accent|composer-pill|mention/i.test(cls)
+        || el.getAttribute('aria-pressed') === 'true';
+}
+
+function composerHasWebSearchChip(doc) {
+    if (!doc || typeof doc.querySelector !== 'function') return false;
+    const root = doc.querySelector('#prompt-textarea') || doc.querySelector('form') || doc.body || doc;
+    if (root.querySelector('[data-system-hint-type="search"], [data-id="search"][data-inline-selection-pill]')) {
+        return true;
+    }
+    for (const el of root.querySelectorAll('span, button, [class*="pill"], [class*="mention"]')) {
+        if (isWebSearchChipEl(el)) return true;
+    }
+    return false;
+}
+
+function findWebSearchMenuItem(items) {
+    for (const it of items || []) {
+        const t = String(it.text || '').replace(/\s+/g, ' ').trim();
+        if (WEB_SEARCH_ITEM_RE.test(t)) return it;
+    }
+    return null;
+}
+
+async function mouseClickCenter(page, box) {
+    if (!box || !page.mouse) return false;
+    await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2);
+    return true;
+}
+
+async function placeCaretAfterComposerChips(page) {
+    try {
+        await page.evaluate(() => {
+            const editor = document.querySelector('#prompt-textarea');
+            if (!editor) return;
+            editor.focus();
+            const sel = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(editor);
+            range.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(range);
+        });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function ensureChatgptThinkOn(page) {
+    if (process.env.AGENTCHAT_CHATGPT_NO_THINK === '1') return 'skipped';
+    try {
+        const state = await page.evaluate(() => {
+            const pills = [...document.querySelectorAll('button.__composer-pill')];
+            const btn = pills.find(el => /^(Think|思考)$/i.test((el.innerText || '').trim()));
+            if (!btn) return { found: false };
+            const r = btn.getBoundingClientRect();
+            return {
+                found: true,
+                ariaPressed: btn.getAttribute('aria-pressed'),
+                box: { x: r.x, y: r.y, w: r.width, h: r.height },
+            };
+        });
+        if (!state || !state.found) return 'missing';
+        const cls = classifyThinkPill({ text: 'Think', ariaPressed: state.ariaPressed });
+        if (cls.on) return 'already-on';
+        if (!cls.clickable) return 'unknown';
+        // Real pointer click: el.click() / locator.click() often leave
+        // aria-pressed=false on a fresh chatgpt.com composer (2026-09-08).
+        const clicked = await mouseClickCenter(page, state.box);
+        if (!clicked) return 'unknown';
+        if (page.locator) {
+            try {
+                await page.locator('button.__composer-pill[aria-pressed="true"]')
+                    .filter({ hasText: /^(Think|思考)$/i })
+                    .first().waitFor({ timeout: 1000 });
+                return 'clicked';
+            } catch (_) { /* fall through to evaluate */ }
+        }
+        const pressed = await page.evaluate(() => {
+            const btn = [...document.querySelectorAll('button.__composer-pill')]
+                .find(el => /^(Think|思考)$/i.test((el.innerText || '').trim()));
+            return btn && btn.getAttribute('aria-pressed');
+        });
+        return pressed === 'true' ? 'clicked' : 'missing';
+    } catch (_) {
+        return 'error';
+    }
+}
+
+async function chipInComposer(page) {
+    return page.evaluate(() => {
+        const root = document.querySelector('#prompt-textarea')
+            || document.querySelector('form') || document.body;
+        return !!root.querySelector('[data-system-hint-type="search"], [data-id="search"][data-inline-selection-pill]');
+    });
+}
+
+async function pickWebSearchMenuRow(page) {
+    if (!page.locator) return false;
+    try {
+        await page.locator('.popover').getByText(/Find real-time news|查找实时新闻|找即時新聞/i)
+            .first().click({ timeout: 3000 });
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+async function waitForChip(page) {
+    if (page.locator) {
+        try {
+            await page.locator('#prompt-textarea [data-system-hint-type="search"], #prompt-textarea [data-id="search"][data-inline-selection-pill]')
+                .first().waitFor({ state: 'attached', timeout: 2000 });
+            return true;
+        } catch (_) {
+            return false;
+        }
+    }
+    return chipInComposer(page);
+}
+
+async function ensureChatgptWebSearchOn(page) {
+    if (process.env.AGENTCHAT_CHATGPT_NO_WEB_SEARCH === '1') return 'skipped';
+    try {
+        if (await chipInComposer(page)) return 'already-on';
+
+        // One insert only: type @ and pick Web search. Do not also click +
+        // (that duplicates the mention as typed "Web search" text).
+        if (page.locator) {
+            await page.locator('#prompt-textarea[contenteditable="true"]').first()
+                .click({ timeout: 5000 }).catch(() => {});
+        }
+        if (page.keyboard && page.keyboard.type) {
+            await page.keyboard.type('@');
+        } else if (page.keyboard && page.keyboard.insertText) {
+            await page.keyboard.insertText('@');
+        } else {
+            return 'missing';
+        }
+        await pickWebSearchMenuRow(page);
+        if (await waitForChip(page)) return 'clicked';
+        if (page.keyboard && page.keyboard.press) {
+            await page.keyboard.press('Escape').catch(() => {});
+            await page.keyboard.press('Backspace').catch(() => {});
+        }
+        return 'missing';
+    } catch (_) {
+        return 'error';
+    }
+}
+
+const adapter = {
     key: 'chatgpt',
     url: 'https://chatgpt.com/',
     authDomains: ['auth.openai.com', 'chat.openai.com/auth'],
@@ -98,26 +274,14 @@ module.exports = {
         }
     },
 
-    // ── ChatGPT-specific: simulated-paste-first with React Send-button verification ──
-    // React contenteditable requires onPaste to be triggered for state update.
-    // v22 CONCURRENCY FIX: system clipboard is a single OS-wide resource — concurrent
-    // workers race on it. Reordered so simulated paste (in-page DataTransfer, no OS
-    // clipboard) is Tier 1, keyboard is Tier 2, system clipboard is LAST resort.
+    // Free ChatGPT: @Web search mention, then prompt, then Think.
+    // Keyboard append keeps the mention; paste-replace would wipe it.
     input: async (page, editor, prompt) => {
-        // Tier 1: simulated ClipboardEvent — in-page DataTransfer, no OS race
-        let ok = await inputViaSimulatedPaste(page, editor, prompt);
-
-        // Tier 2: keyboard.insertText chunked (CDP target-scoped, no OS race)
-        if (!ok) {
-            await inputViaKeyboard(page, editor, prompt, { chunkSize: 150, yieldMs: 40 });
-            ok = true;
-        }
-
-        // Tier 3 (LAST RESORT): system clipboard paste. Racy under concurrency;
-        // the composer readback check catches cross-talk when it occurs.
-        if (!ok) {
-            ok = await inputViaClipboard(page, editor, prompt);
-        }
+        await ensureChatgptWebSearchOn(page);
+        await placeCaretAfterComposerChips(page);
+        const text = /^\s/.test(prompt) ? prompt : ' ' + prompt;
+        await inputViaKeyboard(page, editor, text, { chunkSize: 150, yieldMs: 40 });
+        await ensureChatgptThinkOn(page);
 
         // Verify Send button — React batches state updates asynchronously
         const sendBtn = page.locator('button[data-testid="send-button"]').first();
@@ -141,6 +305,15 @@ module.exports = {
             await page.waitForTimeout(600);
         }
 
-        return ok;
+        return true;
     },
 };
+
+adapter.classifyThinkPill = classifyThinkPill;
+adapter.composerHasWebSearchChip = composerHasWebSearchChip;
+adapter.findWebSearchMenuItem = findWebSearchMenuItem;
+adapter._ensureChatgptThinkOn = ensureChatgptThinkOn;
+adapter._ensureChatgptWebSearchOn = ensureChatgptWebSearchOn;
+adapter._placeCaretAfterComposerChips = placeCaretAfterComposerChips;
+
+module.exports = adapter;

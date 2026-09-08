@@ -113,6 +113,7 @@ ok(!/parseReceiptLine/.test(demoSrc),
     'demo_server does not scrape receipts (runChain already returns provider_used)');
 ok(/productMap/.test(demoSrc), 'demo_server reads productMap');
 ok(!/providers:\s*8/.test(demoSrc), 'demo_server /api/stats is not hardcoded to 8 providers');
+ok(/no-store/.test(demoSrc), 'demo_server sends no-store so webextended.html refresh is fresh');
 
 console.log('── MCP chain SSOT ──');
 const mcpSrc = fs.readFileSync(path.join(ROOT, 'skills/mcp-server/index.mjs'), 'utf8');
