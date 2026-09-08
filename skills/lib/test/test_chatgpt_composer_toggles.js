@@ -32,6 +32,8 @@ async function test(name, fn) {
         assert.strictEqual(typeof chatgpt.findWebSearchMenuItem, 'function');
         assert.strictEqual(typeof chatgpt._ensureChatgptThinkOn, 'function');
         assert.strictEqual(typeof chatgpt._ensureChatgptWebSearchOn, 'function');
+        assert.strictEqual(typeof chatgpt._ensureChatgptDeepResearchOn, 'function');
+        assert.strictEqual(typeof chatgpt._isChatgptDeepResearchActive, 'function');
     });
 
     await test('Think off when aria-pressed=false (live 2026-09-08 free composer)', () => {
@@ -167,6 +169,120 @@ async function test(name, fn) {
             'must type @ to insert Web search mention');
         assert.ok(!/composer-plus-btn/.test(fn),
             'plus-button fallback duplicates select + typed @Web search');
+    });
+
+    // ── Deep Research opt-in & providerTimeoutOverride ──
+    await test('DR env gating: inactive without env, active with AGENTCHAT_CHATGPT_DEEP_RESEARCH=1 and AGENTCHAT_DEEP_RESEARCH=1', () => {
+        delete process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH;
+        delete process.env.AGENTCHAT_DEEP_RESEARCH;
+        assert.strictEqual(chatgpt._isChatgptDeepResearchActive(), false);
+
+        process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH = '1';
+        assert.strictEqual(chatgpt._isChatgptDeepResearchActive(), true);
+        delete process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH;
+
+        process.env.AGENTCHAT_DEEP_RESEARCH = '1';
+        assert.strictEqual(chatgpt._isChatgptDeepResearchActive(), true);
+        delete process.env.AGENTCHAT_DEEP_RESEARCH;
+    });
+
+    await test('providerTimeoutOverride returns 1800000 with DR env, undefined without', () => {
+        delete process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH;
+        delete process.env.AGENTCHAT_DEEP_RESEARCH;
+        assert.strictEqual(chatgpt.providerTimeoutOverride(), undefined);
+
+        process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH = '1';
+        assert.strictEqual(chatgpt.providerTimeoutOverride(), 1_800_000);
+        delete process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH;
+
+        process.env.AGENTCHAT_DEEP_RESEARCH = '1';
+        assert.strictEqual(chatgpt.providerTimeoutOverride(), 1_800_000);
+        delete process.env.AGENTCHAT_DEEP_RESEARCH;
+    });
+
+    await test('DR clicks the Deep research menu row in a plus-menu fixture', async () => {
+        process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH = '1';
+        try {
+            const dom = new JSDOM(`
+                <form>
+                    <div id="prompt-textarea" contenteditable="true"></div>
+                    <button aria-label="Add attachment" id="plus-btn">+</button>
+                    <div id="menu" style="display:none;">
+                        <div class="menu-item" id="web-search-row">Web search</div>
+                        <div class="menu-item" id="dr-row">Deep research Get a detailed report</div>
+                    </div>
+                </form>
+            `);
+            const doc = dom.window.document;
+            let plusClicked = false;
+            let rowClicked = false;
+
+            doc.getElementById('plus-btn').onclick = (e) => {
+                if (e && e.preventDefault) e.preventDefault();
+                plusClicked = true;
+                doc.getElementById('menu').style.display = 'block';
+            };
+            doc.getElementById('plus-btn').addEventListener('click', () => {
+                plusClicked = true;
+            });
+
+            doc.getElementById('dr-row').onclick = (e) => {
+                if (e && e.preventDefault) e.preventDefault();
+                rowClicked = true;
+                const chip = doc.createElement('span');
+                chip.setAttribute('data-system-hint-type', 'deep_research');
+                chip.textContent = 'Deep research';
+                doc.getElementById('prompt-textarea').appendChild(chip);
+            };
+            doc.getElementById('dr-row').addEventListener('click', () => {
+                rowClicked = true;
+                const chip = doc.createElement('span');
+                chip.setAttribute('data-system-hint-type', 'deep_research');
+                chip.textContent = 'Deep research';
+                doc.getElementById('prompt-textarea').appendChild(chip);
+            });
+
+            rowClicked = false;
+            plusClicked = false;
+            doc.getElementById('prompt-textarea').innerHTML = '';
+
+            const fakePage = {
+                evaluate: async (fn, ...args) => {
+                    const gDoc = global.document;
+                    const gWin = global.window;
+                    const gMouseEvent = global.MouseEvent;
+                    global.document = doc;
+                    global.window = dom.window;
+                    global.MouseEvent = dom.window.MouseEvent;
+                    try {
+                        return await fn.call(dom.window, ...args);
+                    } finally {
+                        global.document = gDoc;
+                        global.window = gWin;
+                        global.MouseEvent = gMouseEvent;
+                    }
+                },
+                waitForTimeout: async () => {},
+            };
+
+            const res = await chatgpt._ensureChatgptDeepResearchOn(fakePage);
+            assert.strictEqual(plusClicked, true, 'plus button should be clicked');
+            assert.strictEqual(rowClicked, true, 'deep research row should be clicked');
+            assert.strictEqual(res, 'clicked');
+        } finally {
+            delete process.env.AGENTCHAT_CHATGPT_DEEP_RESEARCH;
+        }
+    });
+
+    await test('DR active skips web search chip step in input orchestration', () => {
+        const inputMethod = chatgptSrc.slice(chatgptSrc.indexOf('\n    input:'));
+        assert.ok(inputMethod.indexOf('isChatgptDeepResearchActive()') >= 0, 'must check DR active in input()');
+        assert.ok(inputMethod.indexOf('ensureChatgptDeepResearchOn(page)') >= 0, 'must call ensureChatgptDeepResearchOn');
+        assert.ok(inputMethod.indexOf('ensureChatgptWebSearchOn(page)') >= 0, 'must call ensureChatgptWebSearchOn on else path');
+        assert.ok(
+            /if\s*\(\s*isChatgptDeepResearchActive\(\)\s*\)\s*\{\s*await ensureChatgptDeepResearchOn\(page\);\s*\}\s*else\s*\{\s*await ensureChatgptWebSearchOn\(page\);\s*\}/.test(inputMethod),
+            'DR active must skip ensureChatgptWebSearchOn'
+        );
     });
 
     console.log('\n' + passed + ' passed, ' + failed + ' failed');

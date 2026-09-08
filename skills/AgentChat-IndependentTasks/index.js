@@ -59,6 +59,13 @@ const WEBEXT = path.resolve(__dirname, "..", "AgentChat-OneWeb", "index.js");
 const { PROVIDER_CHAIN } = require('../lib/providers/chain');
 const FALLBACK_CHAIN = PROVIDER_CHAIN.map(p => p.key);
 
+// Single alias map for normalizeAI and the strict exclude parser: canonical
+// keys pass through (identity), plus real aliases (gpt → chatgpt).
+const PROVIDER_ALIAS_MAP = Object.fromEntries([
+  ...PROVIDER_CHAIN.map(p => [p.key, p.key]),
+  ['gpt', 'chatgpt'],
+]);
+
 function buildFallbackChain(primaryKey, skipList = []) {
     const skipSet = new Set([primaryKey, ...skipList]);
     const rest = FALLBACK_CHAIN.filter(k => !skipSet.has(k));
@@ -116,10 +123,9 @@ async function executeWithFallback(primaryKey, prompt, budgetMs, skipList = []) 
 
 function normalizeAI(name) {
   const n = (name || "").toLowerCase().trim();
-  const map = { gpt: "chatgpt", chatgpt: "chatgpt", gemini: "gemini", kimi: "kimi", qwen: "qwen", claude: "claude", minimax: "minimax", deepseek: "deepseek", mimo: "mimo" };
-  const key = map[n] || n;
+  const key = PROVIDER_ALIAS_MAP[n] || n;
   // ROBUSTNESS: a decomposer DAG (produced by an external AI) can name an AI
-  // that isn't in our provider set — e.g. "grok", "llama", a typo, or "".
+  // that isn't in our provider set — e.g. "llama", a typo, or "".
   // Previously such a key flowed straight through: acquireLock("grok") always
   // "succeeds" (it's an unused name), then callProvider sends --only=grok to
   // OneWeb, which USED to silently run Gemini — so this worker held a lock
@@ -169,9 +175,7 @@ function tryParsePreDecomposedPlan(userTask) {
       const exclude = Array.isArray(json.exclude)
         ? [...new Set(json.exclude.map(name => {
             const n = (name || "").toLowerCase().trim();
-            const aliasMap = { gpt:"chatgpt", chatgpt:"chatgpt", gemini:"gemini", kimi:"kimi",
-              qwen:"qwen", claude:"claude", minimax:"minimax", deepseek:"deepseek", mimo:"mimo" };
-            const known = aliasMap[n];
+            const known = PROVIDER_ALIAS_MAP[n];
             if (known) return known;
             log(`WARN: unknown provider "${name}" in plan exclude list — discarded (valid: ${FALLBACK_CHAIN.join(", ")})`);
             return null;

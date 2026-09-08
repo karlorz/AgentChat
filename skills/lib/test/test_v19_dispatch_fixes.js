@@ -7,8 +7,7 @@ const AGENTCHAT_ROOT = require("path").resolve(__dirname, "..", "..", "..");
  *   P1 串题:       waitForCompletion refuses the legacy `.last()` fallback on a
  *                  reused tab when the prompt provably never reached the page
  *                  (stale-answer / answer cross-talk class).
- *   P2 Kimi 超时:  deep-think toggle-off helper exists, is opt-out-able, and
- *                  degrades gracefully on a dead page.
+ *   P2 Kimi 模式:  mode & thinking effort helpers exist (v35 update).
  *   P3 同 provider 串行: provider tab slots (locks.js) + --ephemeral-tab
  *                  propagation through lib/execute.js's spawn boundary.
  *   P4 DAG 可视化: orchestrator prints nodes with " | ", never a "→" chain.
@@ -220,24 +219,14 @@ test('P1: fresh page (baseline 0) is untouched by the guard', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// P2 — kimi adapter: deep-think off helper
+// P2 — kimi adapter: v35 retired ensureKimiDeepThinkOff
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('P2: kimi adapter exposes deep-think-off, honors opt-out, survives dead page', async () => {
+test('P2: kimi adapter exposes mode and thinking effort helpers', async () => {
     const kimi = require(AGENTCHAT_ROOT + '/skills/lib/providers/adapters/kimi');
-    const fn = kimi._ensureKimiDeepThinkOff;
-    assert.strictEqual(typeof fn, 'function', 'ensureKimiDeepThinkOff missing');
-
-    process.env.AGENTCHAT_KIMI_KEEP_DEEPTHINK = '1';
-    try {
-        const r = await fn({ evaluate: () => { throw new Error('must not be called'); } });
-        assert.strictEqual(r, false, 'opt-out env must short-circuit');
-    } finally {
-        delete process.env.AGENTCHAT_KIMI_KEEP_DEEPTHINK;
-    }
-
-    const dead = await fn({ evaluate: async () => { throw new Error('Target closed'); } });
-    assert.strictEqual(dead, false, 'dead page must degrade to false, not throw');
+    assert.strictEqual(typeof kimi._ensureKimiMode, 'function', '_ensureKimiMode missing');
+    assert.strictEqual(typeof kimi._ensureKimiThinkingEffort, 'function', '_ensureKimiThinkingEffort missing');
+    assert.strictEqual(kimi._ensureKimiDeepThinkOff, undefined, '_ensureKimiDeepThinkOff should be removed');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

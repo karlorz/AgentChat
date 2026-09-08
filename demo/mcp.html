@@ -44,6 +44,6 @@ PASS: 包含 gemini_think / gemini_chat / web_ask / web_smoke
 ALL 7 TESTS PASSED</pre></div>
 </div>
 <script>
-(async()=>{try{const r=await fetch('/api/health');const d=await r.json();const dot=document.getElementById('mcpDot');const st=document.getElementById('mcpStatus');if(d.cdp==='online'){dot.className='dot on';st.textContent='Demo Server 运行中 · CDP 在线'}else{dot.className='dot off';st.textContent='Demo Server 运行中 · CDP 离线'}document.getElementById('mcpDetail').textContent=`端口 ${d.port} · ${(d.providers&&d.providers.length)||10} Providers · MCP Server 独立 stdio 运行`}catch(e){document.getElementById('mcpStatus').textContent='无法连接 Demo Server'}})();
+(async()=>{try{const r=await fetch('/api/health');const d=await r.json();const dot=document.getElementById('mcpDot');const st=document.getElementById('mcpStatus');if(d.cdp==='online'){dot.className='dot on';st.textContent='Demo Server 运行中 · CDP 在线'}else{dot.className='dot off';st.textContent='Demo Server 运行中 · CDP 离线'}document.getElementById('mcpDetail').textContent=`端口 ${d.port} · ${(d.providers&&d.providers.length)||11} Providers · MCP Server 独立 stdio 运行`}catch(e){document.getElementById('mcpStatus').textContent='无法连接 Demo Server'}})();
 </script>
 <footer>AgentChat · MCP Server · 4 Tools · Zod Schema</footer></body></html>

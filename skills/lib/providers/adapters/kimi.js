@@ -2,24 +2,26 @@
  * Kimi (月之暗面 Moonshot) provider adapter config.
  *
  * Key differences from standard pipeline:
- *   - preInputHook clicks "新建会话" to start a fresh conversation,
- *     then ensures "快速模式" (fast mode) is selected
+ *   - preInputHook clicks "新建会话" / "New Chat" to start a fresh conversation,
+ *     then ensures mode (Instant default) and Thinking effort (High default),
+ *     or enters Deep Research mode if AGENTCHAT_KIMI_DEEP_RESEARCH=1
  *   - customSend handles Kimi's .send-button-container with disabled class detection
  *   - navPostDelay=4s for React SPA mount
  *   - postResponseHook rejects truncated opening lines (e.g. "我来从...")
  *   - v11: stillGeneratingCheck = shared multi-signal detector (stillWorking.js)
  *     covering the full 联网搜索 phase vocabulary (搜索→获取网页→阅读→整理),
  *     stop-control + spinner DOM signals, bounded by stillGeneratingMaxHoldMs
- *   - v12: ensureKimiFastMode — clicks model selector → "快速模式" (fast mode)
- *     for faster, cheaper responses. Gracefully degrades if selector not found.
  *   - v21: preInputHook Step 0 — dismisses sidebar .mask overlay before
  *     clearEditor()/click(), preventing the 30s Playwright timeout from
  *     "subtree intercepts pointer events". Two-layer defense: click mask
  *     (natural UX), then force display:none as fallback.
+ *   - v35: re-map to new UI (2026-09-08): mode dropdown Instant/K3/K3 Swarm,
+ *     Thinking effort High/Standard, sidebar Deep Research mode, providerTimeoutOverride.
  */
 
 const { COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
 const { makeStillWorkingCheck } = require('../../stillWorking');
+const { isDeepResearchActive, DEEP_RESEARCH_TIMEOUT_MS } = require('../chain');
 
 // v20: safe stderr logger — replaces the try{require('../../terminal')}catch
 // boilerplate that had been copy-pasted at every log site in this adapter.
@@ -59,253 +61,328 @@ function cleanKimiMetaText(text) {
         .trim();
 }
 
-// ── v12: Fast mode selector for Kimi ─────────────────────────────────────────
-// Kimi's model selector lets users pick between models (快速模式 / 深入思考 /
-// k1.5 / k2 / etc.). The fast mode (快速模式) is the lighter, cheaper model
-// suitable for bulk independent tasks. We try to activate it, but degrade
-// gracefully — a missing selector means the page default is used, which is
-// still a working Kimi (same lenient policy as Gemini model activation).
+// ── v35: Mode selection and thinking effort for new Kimi UI (2026-09-08) ─────
+// The composer bottom-right contains a mode dropdown trigger whose visible text
+// shows e.g. "Instant High". Menu items include:
+//   - "Instant" — "Fast chat, quick replies"
+//   - "K3" — "Chat & Agent, flagship all-rounder" (selecting opens a NEW chat)
+//   - "K3 Swarm" — "Massive search, batch processing, and more in one go" (opens a NEW chat)
+//   - "Thinking effort" submenu → "High" / "Standard"
+// Note: K3/K3 Swarm open a new chat, so mode selection must run AFTER the
+// new-chat click but BEFORE typing.
+// The old 深度思考 toggle and 快速模式 chips no longer exist (retired).
+// AGENTCHAT_KIMI_KEEP_DEEPTHINK is obsolete and removed in v35.
 
-/** CSS selectors for the model-switch trigger button on Kimi's page. */
-// PERF FIX (2026-07): removed 3 overly broad selectors that matched
-// unintended elements ([class*="chat-toolbar"] button, [class*="bottom"]
-// [class*="selector"], [class*="input-area"] [class*="select"]). Playwright's
-// loc.click() calls scrollIntoView() before clicking — a wrong match caused
-// one-time page scrolling that destabilized the SPA's scroll position.
-const MODEL_BTN_SELECTORS = [
-    '[class*="model-select"]',
-    '[class*="ModelSelect"]',
-    '[class*="modelSelect"]',
-    '[class*="mode-switch"]',
-    '[class*="modeSwitch"]',
-    'button:has(> [class*="model"])',
+/** Selectors for candidate menu items inside the opened mode dropdown. */
+const KIMI_MENU_ITEM_SELECTORS = [
+    '[role="menuitem"]',
+    '[role="option"]',
+    '[class*="dropdown-item"]',
+    '[class*="menu-item"]',
+    '[class*="menuItem"]',
+    '[class*="item"]',
+    'button',
+    'div[tabindex]',
+    'li',
 ];
 
-/** Text / aria-label patterns that signal fast mode is already active. */
-const FAST_MODE_ACTIVE_RE = /快速模式|Fast\s*(?:mode|response|reply|answer)?|Speed\s*(?:mode|priority)?/i;
-
-/** Text patterns for the fast-mode menu item (click target inside the dropdown). */
-const FAST_MODE_ITEM_RE = /快速模式|Fast\s*(?:mode|response|reply|answer)?|极速模式/i;
-
-/** Patterns we do NOT want to click — deep-thinking / slow modes. */
-const SLOW_MODE_RE = /深入思考|深度推理|Deep\s*(?:think|reason)|长思考|Pro\s*(?:mode)?|k2/i;
-
 /**
- * Ensure Kimi is set to "快速模式" (fast mode).
- *
- * Strategy (verify-by-effect, modelled after Gemini's geminiModelSwitch.js):
- *   1. Peek: scan the page for the current model indicator — skip if already fast.
- *   2. Find & click: locate the model selector button, click to open the menu.
- *   3. Select: click the fast-mode menu item.
- *   4. Verify: re-scan to confirm fast mode is active.
- *
- * All steps are best-effort. Failures degrade to the page default.
+ * Ensure Kimi's mode dropdown is on the target mode.
+ * Target: 'instant' (default) | 'k3' | 'k3-swarm'.
+ * Override: AGENTCHAT_KIMI_MODE=k3|k3-swarm|instant (case-insensitive).
  *
  * @param {import('playwright-core').Page} page
- * @returns {Promise<boolean>} true if fast mode was activated or already active
+ * @returns {Promise<boolean>} true if target mode is active or successfully activated
  */
-async function ensureKimiFastMode(page) {
+async function ensureKimiMode(page) {
     try {
-        // ── Step 1: Peek — is fast mode already active? ──
-        const alreadyFast = await page.evaluate((reSrc, reFlags) => {
-            const re = new RegExp(reSrc, reFlags);
-            // Scan visible text near input area for fast-mode indicator
-            const body = document.body;
-            if (!body) return false;
-            // Check if any visible element shows the fast mode text
-            const walker = document.createTreeWalker(
-                body, NodeFilter.SHOW_TEXT, null
-            );
-            let node;
-            while ((node = walker.nextNode())) {
-                const el = node.parentElement;
-                if (!el || el.offsetParent === null) continue;
-                const txt = (node.textContent || '').trim();
-                if (txt.length > 1 && txt.length < 30 && re.test(txt)) {
-                    return true;
-                }
-            }
-            return false;
-        }, FAST_MODE_ACTIVE_RE.source, FAST_MODE_ACTIVE_RE.flags).catch(() => false);
-
-        if (alreadyFast) return true;
-
-        // ── Step 2: Find & click the model selector button ──
-        let menuOpened = false;
-        for (const sel of MODEL_BTN_SELECTORS) {
-            try {
-                const loc = page.locator(sel).first();
-                const visible = await loc.isVisible({ timeout: 400 }).catch(() => false);
-                if (!visible) continue;
-
-                // Pre-click guard: skip if it's clearly something else
-                const text = await loc.evaluate(el =>
-                    (el.textContent || '').trim().slice(0, 40)
-                ).catch(() => '');
-                // If it's just icons / empty / clearly a non-model button, skip
-                if (!text || /发送|上传|附件|麦克风|语音/.test(text)) continue;
-
-                await loc.click({ timeout: 2000 });
-                await page.waitForTimeout(800);
-                menuOpened = true;
-                break;
-            } catch (_) { /* try next selector */ }
+        const rawEnv = (process.env.AGENTCHAT_KIMI_MODE || '').trim().toLowerCase();
+        let targetKey = 'instant';
+        if (rawEnv === 'k3-swarm' || rawEnv === 'swarm' || rawEnv === 'k3swarm') {
+            targetKey = 'k3-swarm';
+        } else if (rawEnv === 'k3') {
+            targetKey = 'k3';
         }
 
-        if (!menuOpened) return false; // no selector found — use page default
+        // v35 fix: Playwright evaluate takes ONE argument — wrap in an object.
+        const result = await page.evaluate(({ target, itemSels }) => {
+            function isVisible(el) {
+                if (!el) return false;
+                if (el.offsetParent !== null) return true;
+                if (el.style && el.style.display === 'none') return false;
+                if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
+                if (typeof el.getBoundingClientRect === 'function') {
+                    const r = el.getBoundingClientRect();
+                    if (r && (r.width > 0 || r.height > 0)) return true;
+                }
+                return !el.style || el.style.display !== 'none';
+            }
 
-        // ── Step 3: Click the fast-mode item in the dropdown ──
-        const clicked = await page.evaluate(
-            (fastSrc, fastFlags, slowSrc, slowFlags) => {
-                const fastRe = new RegExp(fastSrc, fastFlags);
-                const slowRe = new RegExp(slowSrc, slowFlags);
+            function matchesTarget(text, tgt) {
+                const t = String(text || '').trim();
+                if (tgt === 'k3-swarm') return /K3\s*Swarm/i.test(t);
+                if (tgt === 'k3') return /^K3\b/i.test(t) && !/Swarm/i.test(t);
+                return /^Instant\b/i.test(t) || /快速/.test(t);
+            }
 
-                // Common menu item selectors
-                const itemSels = [
-                    '[class*="dropdown"] [class*="item"]',
-                    '[class*="menu"] [class*="item"]',
-                    '[class*="popup"] [class*="item"]',
-                    '[class*="option"]',
-                    '[role="menu"] [role="menuitem"]',
-                    '[role="listbox"] [role="option"]',
-                    'li[class*="item"]', 'li[class*="option"]',
-                    'div[class*="item"][class*="select"]',
+            function findTrigger() {
+                const knownTriggers = [
+                    ...document.querySelectorAll(
+                        '[class*="mode-select"], [class*="ModeSelect"], [class*="mode-dropdown"], [class*="model-select"]'
+                    )
                 ];
-
-                for (const itemSel of itemSels) {
-                    const items = document.querySelectorAll(itemSel);
-                    for (const item of items) {
-                        if (item.offsetParent === null) continue; // hidden
-                        const t = (item.textContent || '').trim();
-                        if (!t || t.length > 60) continue;
-                        // Prefer fast mode; skip slow/deep modes
-                        if (fastRe.test(t) && !slowRe.test(t)) {
-                            item.click();
-                            return true;
-                        }
+                for (const el of knownTriggers) {
+                    if (isVisible(el)) return el;
+                }
+                // Mode trigger button displays mode name e.g. "Instant", "K3", "K3 Swarm"
+                const buttons = [
+                    ...document.querySelectorAll('button, [role="button"], [class*="trigger"]')
+                ];
+                for (const b of buttons) {
+                    if (!isVisible(b)) continue;
+                    const t = (b.textContent || '').trim();
+                    if (t.length > 0 && t.length < 40 && (/^Instant\b/i.test(t) || /^K3\b/i.test(t) || /快速/.test(t))) {
+                        return b;
                     }
                 }
+                return null;
+            }
 
-                // Fallback: scan ALL visible elements for fast-mode text
-                const all = document.querySelectorAll(
-                    'div, span, button, li, a, [role="menuitem"], [role="option"]'
-                );
-                for (const el of all) {
-                    if (el.offsetParent === null) continue;
+            const trigger = findTrigger();
+            if (!trigger) return { status: 'no_trigger' };
+
+            const currentText = (trigger.textContent || '').trim();
+            if (matchesTarget(currentText, target)) {
+                return { status: 'already', text: currentText };
+            }
+
+            // Click trigger to open dropdown
+            trigger.click();
+
+            // Find matching menu item
+            let targetItem = null;
+            const allItems = [...document.querySelectorAll(itemSels.join(', '))];
+            for (const item of allItems) {
+                if (!isVisible(item)) continue;
+                const t = (item.textContent || '').trim();
+                if (t.length < 1 || t.length > 80) continue;
+                if (matchesTarget(t, target)) {
+                    targetItem = item;
+                    break;
+                }
+            }
+
+            if (!targetItem) {
+                // Fallback: look through all visible clickable elements
+                const fallbacks = [...document.querySelectorAll('div, span, li, a, button')];
+                for (const el of fallbacks) {
+                    if (!isVisible(el)) continue;
                     const t = (el.textContent || '').trim();
-                    if (t.length < 2 || t.length > 50) continue;
-                    if (fastRe.test(t) && !slowRe.test(t)) {
-                        // Prefer clickable ancestor
-                        let clickable = el;
-                        while (clickable && clickable.tagName !== 'BUTTON'
-                            && clickable.getAttribute('role') !== 'menuitem'
-                            && clickable.getAttribute('role') !== 'option') {
-                            clickable = clickable.parentElement;
-                        }
-                        if (clickable && clickable.offsetParent !== null) {
-                            clickable.click();
-                            return true;
-                        }
+                    if (t.length >= 1 && t.length <= 80 && matchesTarget(t, target)) {
+                        targetItem = el;
+                        break;
                     }
                 }
-                return false;
-            },
-            FAST_MODE_ITEM_RE.source, FAST_MODE_ITEM_RE.flags,
-            SLOW_MODE_RE.source, SLOW_MODE_RE.flags
-        ).catch(() => false);
+            }
 
-        if (!clicked) {
-            // Close the menu if we couldn't find fast mode
-            await page.keyboard.press('Escape').catch(() => {});
+            if (!targetItem) return { status: 'no_item', currentText };
+
+            targetItem.click();
+
+            // Re-read trigger to confirm
+            const confirmedTrigger = findTrigger();
+            const confirmedText = confirmedTrigger ? (confirmedTrigger.textContent || '').trim() : '';
+            const ok = matchesTarget(confirmedText, target);
+            return { status: ok ? 'ok' : 'verify_failed', text: confirmedText };
+        }, { target: targetKey, itemSels: KIMI_MENU_ITEM_SELECTORS });
+
+        if (result.status === 'already') {
+            klog(`Kimi mode already on target (${targetKey}): "${result.text}"`);
+            return true;
+        }
+        if (result.status === 'ok') {
+            klog(`Kimi mode switched to ${targetKey}: "${result.text}"`);
+            if (page.waitForTimeout) await page.waitForTimeout(500);
+            return true;
+        }
+        if (result.status === 'no_trigger') {
+            klog('⚠ Kimi mode trigger not found — using page default');
             return false;
         }
-
-        // ── Step 4: Settle & verify ──
-        await page.waitForTimeout(1000);
-        await page.keyboard.press('Escape').catch(() => {});
-
-        const confirmed = await page.evaluate((reSrc, reFlags) => {
-            const re = new RegExp(reSrc, reFlags);
-            const body = document.body;
-            if (!body) return false;
-            const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT, null);
-            let node;
-            while ((node = walker.nextNode())) {
-                const el = node.parentElement;
-                if (!el || el.offsetParent === null) continue;
-                const txt = (node.textContent || '').trim();
-                if (txt.length > 1 && txt.length < 30 && re.test(txt)) return true;
-            }
+        if (result.status === 'no_item') {
+            klog(`⚠ Kimi mode menu item for ${targetKey} not found — using page default`);
             return false;
-        }, FAST_MODE_ACTIVE_RE.source, FAST_MODE_ACTIVE_RE.flags).catch(() => false);
-
-        return confirmed;
-    } catch (_) {
-        // Best-effort only — a missing selector doesn't break the provider
+        }
+        klog(`⚠ Kimi mode verification failed (trigger showed "${result.text}") — using page default`);
+        return false;
+    } catch (e) {
+        klog(`ensureKimiMode error: ${e.message} — using page default`);
         return false;
     }
 }
 
-// ── v19: Deep-think toggle-off ───────────────────────────────────────────────
-// Field failure: Kimi runs frequently blew the 180s per-call cap and were
-// SIGKILL'd by the orchestrator's watchdog (budget + 35s). Fast mode alone
-// (above) doesn't help when the 深度思考 toggle is ON — long-thinking easily
-// exceeds any bulk-dispatch budget. For independent homework-style tasks the
-// fast path is the right default; opt out via AGENTCHAT_KIMI_KEEP_DEEPTHINK=1.
-
-const DEEPTHINK_RE = /深度思考|深入思考|长思考|深度推理|Deep\s*Think(?:ing)?|Long\s*Think/i;
-
 /**
- * Turn OFF Kimi's deep-thinking toggle if — and only if — it is PROVABLY
- * active. Clicking a toggle whose state we cannot read risks turning
- * deep-think ON, which is strictly worse than doing nothing; every ambiguity
- * therefore resolves to "don't touch".
+ * Ensure Kimi's Thinking effort is set to High (default) or Standard (opt-out).
+ * Env override: AGENTCHAT_KIMI_NO_THINK=1 → Standard.
+ *
+ * Strategy:
+ *   1. Open the mode dropdown (or read existing state).
+ *   2. Find and open the "Thinking effort" submenu (click or hover).
+ *   3. Click the target effort item (/^High$/i or /^Standard$/i).
+ *   4. Verify effect.
  *
  * @param {import('playwright-core').Page} page
- * @returns {Promise<boolean>} true if an active deep-think toggle was clicked off
+ * @returns {Promise<boolean>} true if thinking effort is active or set
  */
-async function ensureKimiDeepThinkOff(page) {
-    if (process.env.AGENTCHAT_KIMI_KEEP_DEEPTHINK === '1') return false;
+async function ensureKimiThinkingEffort(page) {
     try {
-        const clicked = await page.evaluate((reSrc, reFlags) => {
-            const re = new RegExp(reSrc, reFlags);
-            // Word-ish boundaries: "interactive" must NOT count as "active".
-            const ACTIVE_CLS_RE = /(?:^|[\s_-])(?:active|checked|selected|enabled|on)(?:$|[\s_-])/i;
-            const isActive = (el) => {
-                if (!el || !el.getAttribute) return false;
-                const cls = typeof el.className === 'string' ? el.className : '';
-                if (ACTIVE_CLS_RE.test(cls)) return true;
-                if (el.getAttribute('aria-pressed') === 'true') return true;
-                if (el.getAttribute('aria-checked') === 'true') return true;
-                const ds = el.dataset || {};
-                if (ds.state === 'checked' || ds.state === 'on' || ds.active === 'true') return true;
-                return false;
-            };
-            const candidates = document.querySelectorAll(
-                'button, [role="switch"], [role="button"], [class*="switch"], [class*="toggle"], [class*="chip"]'
-            );
-            for (const el of candidates) {
-                if (el.offsetParent === null) continue; // hidden
-                const t = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '')).trim();
-                if (!t || t.length > 40 || !re.test(t)) continue;
-                // Active state may live on the element or a close wrapper —
-                // climb at most 3 ancestors, each judged with the SAME strict
-                // predicate (never a bare substring match).
-                let active = false;
-                let probe = el;
-                for (let d = 0; d < 4 && probe; d++, probe = probe.parentElement) {
-                    if (isActive(probe)) { active = true; break; }
+        const wantStandard = process.env.AGENTCHAT_KIMI_NO_THINK === '1';
+        const targetEffort = wantStandard ? 'standard' : 'high';
+
+        // v35 fix: Playwright evaluate takes ONE argument — wrap in an object.
+        const result = await page.evaluate(({ target, itemSels }) => {
+            function isVisible(el) {
+                if (!el) return false;
+                if (el.offsetParent !== null) return true;
+                if (el.style && el.style.display === 'none') return false;
+                if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
+                if (typeof el.getBoundingClientRect === 'function') {
+                    const r = el.getBoundingClientRect();
+                    if (r && (r.width > 0 || r.height > 0)) return true;
                 }
-                if (!active) continue; // unknown/off state — never click blind
-                el.click();
-                return true;
+                return !el.style || el.style.display !== 'none';
             }
+
+            function findTrigger() {
+                const known = [
+                    ...document.querySelectorAll(
+                        '[class*="mode-select"], [class*="ModeSelect"], [class*="mode-dropdown"], [class*="model-select"]'
+                    )
+                ];
+                for (const el of known) {
+                    if (isVisible(el)) return el;
+                }
+                const buttons = [
+                    ...document.querySelectorAll('button, [role="button"], [class*="trigger"]')
+                ];
+                for (const b of buttons) {
+                    if (!isVisible(b)) continue;
+                    const t = (b.textContent || '').trim();
+                    if (t.length > 0 && t.length < 40 && (/^Instant\b/i.test(t) || /^K3\b/i.test(t) || /快速/.test(t))) {
+                        return b;
+                    }
+                }
+                return null;
+            }
+
+            const trigger = findTrigger();
+            if (!trigger) return { status: 'no_trigger' };
+
+            const trigText = (trigger.textContent || '').trim();
+            // Trigger often includes effort, e.g. "Instant High"
+            if (target === 'high' && /\bHigh\b/i.test(trigText)) {
+                return { status: 'already', text: trigText };
+            }
+            if (target === 'standard' && /\bStandard\b/i.test(trigText)) {
+                return { status: 'already', text: trigText };
+            }
+
+            // Click trigger to open menu
+            trigger.click();
+
+            // Find "Thinking effort" submenu entry
+            const menuItems = [...document.querySelectorAll(itemSels.join(', '))];
+            let effortMenu = null;
+            for (const it of menuItems) {
+                if (!isVisible(it)) continue;
+                const t = (it.textContent || '').trim();
+                if (/Thinking\s*effort|思考深度|推理深度/i.test(t)) {
+                    effortMenu = it;
+                    break;
+                }
+            }
+
+            if (!effortMenu) {
+                // Check all elements for Thinking effort
+                const all = [...document.querySelectorAll('div, span, button, li')];
+                for (const el of all) {
+                    if (!isVisible(el)) continue;
+                    const t = (el.textContent || '').trim();
+                    if (/Thinking\s*effort|思考深度|推理深度/i.test(t) && t.length < 40) {
+                        effortMenu = el;
+                        break;
+                    }
+                }
+            }
+
+            if (!effortMenu) return { status: 'no_submenu' };
+
+            // Open submenu: try click first, mouseenter as supplement
+            effortMenu.click();
+            try {
+                effortMenu.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            } catch (_) {}
+
+            // Find target effort item: /^High$/i or /^Standard$/i
+            const targetRe = target === 'high' ? /^High$/i : /^Standard$/i;
+            let effortItem = null;
+            const subItems = [...document.querySelectorAll(itemSels.join(', '))];
+            for (const it of subItems) {
+                if (!isVisible(it)) continue;
+                const t = (it.textContent || '').trim();
+                if (targetRe.test(t)) {
+                    effortItem = it;
+                    break;
+                }
+            }
+
+            if (!effortItem) {
+                const all = [...document.querySelectorAll('div, span, button, li')];
+                for (const el of all) {
+                    if (!isVisible(el)) continue;
+                    const t = (el.textContent || '').trim();
+                    if (targetRe.test(t)) {
+                        effortItem = el;
+                        break;
+                    }
+                }
+            }
+
+            if (!effortItem) return { status: 'no_effort_item' };
+
+            effortItem.click();
+
+            // Check if trigger or item indicates target
+            const postTrig = findTrigger();
+            const postText = postTrig ? (postTrig.textContent || '').trim() : '';
+            return { status: 'ok', text: postText };
+        }, { target: targetEffort, itemSels: KIMI_MENU_ITEM_SELECTORS });
+
+        if (result.status === 'already') {
+            klog(`Kimi thinking effort already on ${targetEffort}: "${result.text}"`);
+            return true;
+        }
+        if (result.status === 'ok') {
+            klog(`Kimi thinking effort set to ${targetEffort}: "${result.text}"`);
+            if (page.waitForTimeout) await page.waitForTimeout(500);
+            return true;
+        }
+        if (result.status === 'no_trigger') {
+            klog('⚠ Kimi mode trigger not found for thinking effort — using page default');
             return false;
-        }, DEEPTHINK_RE.source, DEEPTHINK_RE.flags);
-        if (clicked) await page.waitForTimeout(800);
-        return !!clicked;
-    } catch (_) {
-        return false; // best-effort — never fail the provider over a toggle
+        }
+        if (result.status === 'no_submenu') {
+            klog('⚠ Kimi "Thinking effort" submenu not found — using page default');
+            return false;
+        }
+        if (result.status === 'no_effort_item') {
+            klog(`⚠ Kimi effort item "${targetEffort}" not found — using page default`);
+            return false;
+        }
+        return false;
+    } catch (e) {
+        klog(`ensureKimiThinkingEffort error: ${e.message} — using page default`);
+        return false;
     }
 }
 
@@ -343,6 +420,11 @@ module.exports = {
     url: 'https://www.kimi.com/',
     navPostDelay: 4000, // React SPA render time
     authDomains: ['kimi.moonshot.cn/login', 'kimi.com/login', 'moonshot.cn/login'],
+    // v35: Deep research runs 5-30 min. The 180s default per-provider budget
+    // SIGKILLs the call (the same incident that motivated the old deep-think-off logic).
+    // Raised to the shared DR budget (30 min) when deep research is opted in.
+    providerTimeoutOverride: () => (isDeepResearchActive('kimi') ? DEEP_RESEARCH_TIMEOUT_MS : undefined),
+
     quotaPatterns: [
         /高峰.*算力.*不足/i,
         /Kimi.*(?:累了|休息)/i,
@@ -389,16 +471,49 @@ module.exports = {
             }
         } catch (_) { /* non-critical — proceed with page default */ }
 
-        // Step 1: Click "新建会话" to start a fresh conversation
+        // Step 1: Click "新建会话" / "New Chat" to start a fresh conversation,
+        // or click "Deep Research" if deep research mode is enabled.
+        const isDeepResearch = isDeepResearchActive('kimi');
+
+        if (isDeepResearch) {
+            // v35: Deep research opt-in clicks sidebar "Deep Research" entry and skips
+            // standard mode / thinking effort steps (DR mode owns the session).
+            try {
+                const drClicked = await page.evaluate(() => {
+                    const drRe = /Deep\s*Research|深度研究|深入研究/i;
+                    const candidates = [
+                        ...document.querySelectorAll('a, button, [role="button"], [role="link"], div[class*="item"], div[class*="nav"]')
+                    ];
+                    for (const el of candidates) {
+                        const t = (el.textContent || '').trim();
+                        if (t.length > 0 && t.length < 40 && drRe.test(t)) {
+                            el.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                });
+                if (drClicked) {
+                    klog('Deep Research mode entry clicked');
+                    await page.waitForTimeout(2500);
+                } else {
+                    klog('⚠ Deep Research sidebar entry not found');
+                }
+            } catch (_) { /* non-critical */ }
+            return;
+        }
+
         try {
             const clicked = await page.evaluate(() => {
                 let btn = document.querySelector('.new-chat-btn');
                 if (!btn) {
                     const links = document.querySelectorAll(
-                        'a, div[class*="new-chat"], div[class*="sidebar-new"]'
+                        'a, button, [role="button"], div[class*="new-chat"], div[class*="sidebar-new"]'
                     );
+                    const newChatRe = /^New Chat$/i;
                     for (const el of links) {
-                        if ((el.textContent || '').includes('新建会话')) { btn = el; break; }
+                        const t = (el.textContent || '').trim();
+                        if (t.includes('新建会话') || newChatRe.test(t)) { btn = el; break; }
                     }
                 }
                 if (btn) { btn.click(); return true; }
@@ -407,29 +522,23 @@ module.exports = {
             if (clicked) await page.waitForTimeout(2500);
         } catch (_) { /* non-critical */ }
 
-        // Step 2: Ensure "快速模式" (fast mode) is selected
-        // Best-effort — degrades gracefully to page default if selector not found
+        // Step 2: Ensure target mode (Instant default; K3 / K3 Swarm via AGENTCHAT_KIMI_MODE)
+        // Best-effort — degrades gracefully to page default if selector not found.
+        // Note: K3/K3 Swarm open a new chat, so this must run AFTER new-chat click but BEFORE typing.
         try {
-            const fastOk = await ensureKimiFastMode(page);
-            // v19: log BOTH outcomes — a silent activation failure previously
-            // looked identical to success in the logs, hiding the root cause
-            // of budget-overrun SIGKILLs behind "kimi is just slow".
-            klog(fastOk
-                ? '快速模式 (fast mode) active'
-                : '⚠ 快速模式激活失败（选择器未命中或 UI 变更）— 使用页面默认模型');
+            await ensureKimiMode(page);
         } catch (_) { /* best-effort — proceed with page default */ }
 
-        // Step 3 (v19): turn OFF 深度思考 — the main per-call-budget killer
-        // for bulk independent dispatch. Provably-active toggles only;
-        // AGENTCHAT_KIMI_KEEP_DEEPTHINK=1 opts out.
+        // Step 3: Ensure Thinking effort (High default; Standard via AGENTCHAT_KIMI_NO_THINK=1).
+        // Note: retired ensureKimiDeepThinkOff & AGENTCHAT_KIMI_KEEP_DEEPTHINK in v35.
         try {
-            const offed = await ensureKimiDeepThinkOff(page);
-            if (offed) klog('深度思考已关闭（v19：避免超出 per-call 预算被 SIGKILL）');
+            await ensureKimiThinkingEffort(page);
         } catch (_) { /* best-effort */ }
     },
 
-    // v19: exported for tests (factory ignores unknown keys)
-    _ensureKimiDeepThinkOff: ensureKimiDeepThinkOff,
+    // v35: exported for tests (factory ignores unknown keys)
+    _ensureKimiMode: ensureKimiMode,
+    _ensureKimiThinkingEffort: ensureKimiThinkingEffort,
     // v34: sanitizer exported for tests (factory ignores unknown keys)
     _cleanKimiMetaText: cleanKimiMetaText,
 

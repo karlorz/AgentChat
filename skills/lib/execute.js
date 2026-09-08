@@ -29,7 +29,7 @@
 const { spawn } = require("child_process");
 const { releaseLock, acquireProviderSlot, resolveMaxTabsPerProvider } = require("./locks");
 const { log: _log } = require("./terminal");
-const { PROVIDER_CHAIN } = require("./providers/chain");
+const { PROVIDER_CHAIN, PROVIDER_NAMES_RE_SOURCE, DEEP_RESEARCH_TIMEOUT_MS } = require("./providers/chain");
 
 // provider → operator-actionable recovery command (single source: chain.js).
 // Surfaced when a call fails with reason 'auth' so orchestrator logs and the
@@ -67,7 +67,7 @@ const EXIT_REASONS = {
 // "Gemini 是 Google 的模型" → "是 Google 的模型"). A bare provider name is now
 // only stripped when followed by a speech verb or an explicit colon.
 
-const PROVIDER_NAMES = "(?:Gemini|Claude|ChatGPT|Kimi|Qwen)";
+const PROVIDER_NAMES = PROVIDER_NAMES_RE_SOURCE;
 const UI_CHROME_PATTERNS = [
     new RegExp(`^${PROVIDER_NAMES}\\s*(?:[说說]了?|said|responded)[：:\\s]*`, "gim"),
     new RegExp(`^${PROVIDER_NAMES}\\s*[：:]\\s*`, "gim"),
@@ -154,6 +154,10 @@ function createExecutor({
      * no internal cascade — fallback control lives solely in the caller).
      * Prompt is delivered over stdin, never argv.
      *
+     * @param {string} prompt - Prompt to send
+     * @param {string} provider - Provider key
+     * @param {number} timeoutMs - Call budget in ms
+     * @param {object} [callOpts={}] - Call options: { ephemeralTab?: boolean, deepResearch?: boolean }
      * @returns {Promise<{ok:boolean, text:string, provider:string, terminal?:boolean, reason?:string, error?:string}>}
      */
     function callProvider(prompt, provider, timeoutMs, callOpts = {}) {
@@ -166,6 +170,11 @@ function createExecutor({
         // (or timing out) within its slice. Clamp at the spawn boundary so the
         // value the child sees is always in the "milliseconds" regime.
         timeoutMs = Math.max(10_000, Math.floor(timeoutMs) || 0);
+
+        // DR runs 5-30min; 180s SIGKILLs.
+        if (callOpts.deepResearch === true) {
+            timeoutMs = Math.max(timeoutMs, DEEP_RESEARCH_TIMEOUT_MS);
+        }
 
         // EXIT-CODE CONFLATION GUARD: OneWeb exits 1 for BOTH a usage error
         // (empty prompt) and ERR_NO_CDP. An empty prompt spawned downstream would
@@ -183,6 +192,8 @@ function createExecutor({
                 `--timeout-per-provider=${timeoutMs}`,
                 "--keep-tabs", // POLICY: never let subprocesses close the user's browser
             ];
+            // DR runs 5-30min; pass --deep-research flag to child process
+            if (callOpts.deepResearch === true) childArgs.push("--deep-research");
             // v19: same-provider concurrency — when >1 tab slot per provider is
             // configured, EVERY call runs in its own ephemeral tab (never reuse
             // an existing tab, close it on exit). Reuse under concurrency lets
@@ -296,10 +307,21 @@ function createExecutor({
      *
      * chain[0] is the intended primary; any other provider answering counts as
      * degradation.
+     *
+     * @param {string[]} chain - Ordered provider keys to attempt
+     * @param {string} prompt - Prompt to send
+     * @param {number} budgetMs - Total wall-clock budget in ms
+     * @param {object} [opts={}] - Optional options: { deepResearch?: boolean }
+     * @returns {Promise<{success:boolean, response?:string, provider_used?:string, primary_intended:string, degradation?:object, error?:string, elapsed_ms:number}>}
      */
-    async function runChain(chain, prompt, budgetMs) {
+    async function runChain(chain, prompt, budgetMs, opts = {}) {
         const start = Date.now();
         const tried = [];
+        const isDeepResearch = opts.deepResearch === true;
+        // DR: the total budget must cover the per-call DR budget, otherwise a
+        // 12-minute research run ends with remaining<0 and every fallback is
+        // marked budget_exhausted without an attempt.
+        if (isDeepResearch) budgetMs = Math.max(budgetMs, DEEP_RESEARCH_TIMEOUT_MS);
 
         for (let i = 0; i < chain.length; i++) {
             const key = chain[i];
@@ -310,7 +332,7 @@ function createExecutor({
                 for (const k of chain.slice(i)) tried.push({ provider: k, reason: "budget_exhausted" });
                 break;
             }
-            const perCall = Math.min(remaining, perCallCapMs);
+            const perCall = isDeepResearch ? Math.min(remaining, DEEP_RESEARCH_TIMEOUT_MS) : Math.min(remaining, perCallCapMs);
 
             // LOCKED-PROVIDER RETRY: transient resource conflict (another
             // worker holds the provider lock) is NOT the same as a dead
@@ -347,7 +369,9 @@ function createExecutor({
             }
 
             log(`[fallback] Trying ${key}${slot.slot > 0 ? `#${slot.slot}` : ""} (${Math.round(perCall / 1000)}s budget)...`);
-            const result = await callProvider(prompt, key, perCall, { ephemeralTab: maxTabs > 1 });
+            const callOpts = { ephemeralTab: maxTabs > 1 };
+            if (isDeepResearch) callOpts.deepResearch = true;
+            const result = await callProvider(prompt, key, perCall, callOpts);
 
             if (result.ok) {
                 if (!holdLockOnSuccess) releaseLock(slot.lockKey);

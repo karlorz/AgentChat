@@ -24,13 +24,13 @@
 <body>
 <nav class="topbar"><a href="index.html" class="brand">AgentChat</a><a href="architecture.html">架构</a><a href="webextended.html" class="active">降级链</a><a href="freesubagent.html">并行编排</a><a href="workflow.html">串行管道</a><a href="setup.html">登录检测</a><a href="mcp.html">MCP Server</a><a href="python.html">Python SDK</a><a href="locales.html">多语言</a></nav>
 <div class="container">
-<div class="section"><h2>🔗 AgentChat-OneWeb — 多 Provider 降级链 <span class="tag cyan" id="sessBadge" style="display:none;cursor:default">🔗 会话模式 · 0 轮</span></h2><p>10 个 AI 服务按 chain.js 排优先级。默认 newest full Flash + Extended Thinking，不可用则自动降级到下一个。<strong>开启会话模式后，降级时自动将对话历史传递给 fallback 模型续答。</strong></p>
+<div class="section"><h2>🔗 AgentChat-OneWeb — 多 Provider 降级链 <span class="tag cyan" id="sessBadge" style="display:none;cursor:default">🔗 会话模式 · 0 轮</span></h2><p>11 个 AI 服务按 chain.js 排优先级。默认 newest full Flash + Extended Thinking，不可用则自动降级到下一个。<strong>开启会话模式后，降级时自动将对话历史传递给 fallback 模型续答。</strong></p>
 <div class="flow" style="margin:16px 0">
 <div class="step"><div class="num">P1</div><div class="label">🧠 Gemini</div><div class="role">深度推理</div></div><div class="arrow">→</div>
 <div class="step"><div class="num">P2</div><div class="label">💬 ChatGPT</div><div class="role">综合能力</div></div><div class="arrow">→</div>
 <div class="step"><div class="num">P3</div><div class="label">📝 Claude</div><div class="role">代码生成</div></div><div class="arrow">→</div>
-<div class="step"><div class="num">P4</div><div class="label">🔍 Qwen</div><div class="role">联网检索</div></div><div class="arrow">→</div>
-<div class="step"><div class="num">P5-10</div><div class="label">📚 Kimi → ChatGLM → Doubao → …</div><div class="role">增量覆盖</div></div>
+<div class="step"><div class="num">P4</div><div class="label">⚡ Grok</div><div class="role">实时检索</div></div><div class="arrow">→</div>
+<div class="step"><div class="num">P5-11</div><div class="label">📚 Kimi → Qwen → … → DeepSeek</div><div class="role">增量覆盖</div></div>
 </div>
 <div class="two-col"><div class="card" style="cursor:default"><h3>🎯 模型契约</h3><p>Gemini 默认 newest full Flash + Extended Thinking（免费 tier）。<code>AGENTCHAT_GEMINI_MODEL=pro</code> 才走 Pro Extended；不可用时回退已验证 Flash，再失败才降级 ChatGPT。</p></div><div class="card" style="cursor:default"><h3>⏱️ 超时保护</h3><p>单 Provider 3 分钟超时，总预算 10 分钟。剩余时间 < 15 秒停止尝试——防止一个慢 Provider 吃掉所有时间。</p></div></div>
 </div>
@@ -41,7 +41,7 @@
 <div class="status"><span><span class="dot on" id="cdpDot"></span> CDP :9222</span><span id="provCount">检测中...</span><span class="sess-badge on" id="sessToggle"><span id="sessLabel">🔗 会话模式</span><button id="sessNew" style="display:none">新建</button></span></div>
 </div></div>
 <script>
-const PS=[{k:'gemini',n:'Gemini Flash',i:'🧠',d:'newest full Flash + Extended',c:'#58a6ff'},{k:'chatgpt',n:'ChatGPT',i:'💬',d:'综合最强',c:'#3fb950'},{k:'claude',n:'Claude',i:'📝',d:'代码精准',c:'#d2991d'},{k:'qwen',n:'通义千问',i:'🔍',d:'联网检索',c:'#a371f7'},{k:'kimi',n:'Kimi',i:'📚',d:'长文分析',c:'#f778ba'},{k:'minimax',n:'MiniMax',i:'💡',d:'中文对话',c:'#39d2c0'},{k:'chatglm',n:'ChatGLM',i:'🧩',d:'智谱',c:'#7ee787'},{k:'doubao',n:'Doubao',i:'🫘',d:'豆包',c:'#ffa657'},{k:'mimo',n:'MiMo',i:'✨',d:'创意生成',c:'#ff7b72'},{k:'deepseek',n:'DeepSeek',i:'🔮',d:'低成本',c:'#79c0ff'}];
+const PS=[{k:'gemini',n:'Gemini Flash',i:'🧠',d:'newest full Flash + Extended',c:'#58a6ff'},{k:'chatgpt',n:'ChatGPT',i:'💬',d:'综合最强',c:'#3fb950'},{k:'claude',n:'Claude',i:'📝',d:'代码精准',c:'#d2991d'},{k:'grok',n:'Grok',i:'⚡',d:'实时搜索',c:'#e1e4e8'},{k:'kimi',n:'Kimi',i:'📚',d:'长文分析',c:'#f778ba'},{k:'qwen',n:'通义千问',i:'🔍',d:'联网检索',c:'#a371f7'},{k:'minimax',n:'MiniMax',i:'💡',d:'中文对话',c:'#39d2c0'},{k:'chatglm',n:'ChatGLM',i:'🧩',d:'智谱',c:'#7ee787'},{k:'doubao',n:'Doubao',i:'🫘',d:'豆包',c:'#ffa657'},{k:'mimo',n:'MiMo',i:'✨',d:'创意生成',c:'#ff7b72'},{k:'deepseek',n:'DeepSeek',i:'🔮',d:'低成本',c:'#79c0ff'}];
 let sel='gemini';let busy=false;let sessionId=null;let turnCount=0;
 
 // 会话管理
@@ -55,4 +55,4 @@ async function send(){if(busy)return;const p=document.getElementById('prompt').v
 try{const body={prompt:p,provider:sel,sessionId:sid};const r=await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();document.getElementById('load')?.remove();if(d.success===false){const errMsg=d.response||'未知错误';c.innerHTML+=`<div class="msg ai"><div class="bub" style="color:var(--red)">❌ ${h(errMsg.substring(0,500))}</div></div>`}else{const s=(d.timeMs/1000).toFixed(0);const mb=d.model?`<span class="tag purple">${d.model}</span>`:'';const fb=d.chain&&d.chain.length>1?`<span class="tag orange">${d.chain.join(' → ')}</span>`:'';const needFallback=fb||(d.chain&&d.chain.length>1);const fallbackNote=needFallback?`<p style="font-size:11px;color:var(--cyan);margin-top:6px">💡 降级时已自动传递 ${turnCount} 轮对话历史给 ${d.provider||'AI'}</p>`:'';c.innerHTML+=`<div class="msg ai"><div class="bub">${h(d.response)}</div><div class="meta"><span class="tag green">${d.provider||'AI'}</span>${mb}<span>${s}s</span>${fb}</div>${fallbackNote}</div>`;c.scrollTop=c.scrollHeight;if(d.session&&d.session.hasContext){needFallback||''}turnCount++;updateSessUI()}}catch(e){document.getElementById('load')?.remove();c.innerHTML+=`<div class="msg ai"><div class="bub" style="color:var(--red)">失败: ${h(e.message)}</div></div>`}finally{busy=false;b.disabled=false}}
 function h(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 </script>
-<footer>AgentChat · OneWeb · 10 Provider Fallback Chain</footer></body></html>
+<footer>AgentChat · OneWeb · 11 Provider Fallback Chain</footer></body></html>

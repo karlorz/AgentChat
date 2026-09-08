@@ -84,7 +84,7 @@ async function callWebext(prompt, opts = {}) {
         const idx = PROVIDER_KEYS.indexOf(String(opts.from).toLowerCase());
         if (idx >= 0) chain = PROVIDER_KEYS.slice(idx);
     }
-    const result = await executor.runChain(chain, prompt, opts.timeout || 600000);
+    const result = await executor.runChain(chain, prompt, opts.timeout || 600000, { deepResearch: !!opts.deepResearch });
     const provider = result.provider_used || '';
     const fallback = result.degradation && result.degradation.fallback_chain;
     return {
@@ -153,7 +153,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/ask') {
         const body = await readBody(req);
         try {
-            const { prompt, provider, sessionId } = JSON.parse(body);
+            const { prompt, provider, sessionId, deepResearch } = JSON.parse(body);
                 if (!prompt || prompt.trim().length < 2) {
                     throw new Error('Prompt too short');
                 }
@@ -173,6 +173,7 @@ const server = http.createServer(async (req, res) => {
                     from: provider || 'gemini',
                     timeout: 600000,
                     provTimeout: 180000,
+                    deepResearch: !!deepResearch,
                 });
 
                 // 会话模式：成功响应后保存对话记录

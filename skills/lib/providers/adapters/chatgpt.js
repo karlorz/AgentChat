@@ -17,6 +17,14 @@
  */
 
 const { inputViaKeyboard, COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
+const { isDeepResearchActive, DEEP_RESEARCH_TIMEOUT_MS } = require('../chain');
+
+// Safe stderr logger — logs via terminal utility if available
+let clog = () => {};
+try {
+    const { log: _tlog } = require('../../terminal');
+    clog = (msg) => { try { _tlog('chatgpt', msg); } catch (_) {} };
+} catch (_) { /* logger unavailable — stay silent */ }
 
 const THINK_LABEL_RE = /^(Think|思考)$/i;
 const WEB_SEARCH_CHIP_RE = /^(Web search|联网搜索|網頁搜尋|Search the web)$/i;
@@ -194,10 +202,140 @@ async function ensureChatgptWebSearchOn(page) {
     }
 }
 
+function isChatgptDeepResearchActive() {
+    return isDeepResearchActive('chatgpt');
+}
+
+async function isChatgptDeepResearchOn(page) {
+    return page.evaluate(() => {
+        const root = document.querySelector('#prompt-textarea')
+            || document.querySelector('form') || document.body;
+        // Check for DR chip/pill or inline selection pill
+        const chip = root.querySelector(
+            '[data-system-hint-type*="research" i], [data-system-hint-type*="deep" i], ' +
+            '[data-id*="research" i], [data-id*="deep" i], ' +
+            '[data-inline-selection-pill][data-keyword*="research" i], [data-inline-selection-pill]'
+        );
+        if (chip && (/deep\s*research|深度研究/i.test(chip.textContent || chip.getAttribute('data-system-hint-type') || chip.getAttribute('data-id') || chip.getAttribute('data-keyword') || ''))) return true;
+        // Check aria-pressed or data-state on composer buttons/pills
+        for (const btn of root.querySelectorAll('button, [role="button"], [class*="pill"]')) {
+            const t = (btn.innerText || btn.textContent || '').trim();
+            if (/Deep\s*research|深度研究/i.test(t)) {
+                if (btn.getAttribute('aria-pressed') === 'true' || btn.getAttribute('data-state') === 'checked' || btn.getAttribute('data-state') === 'active') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    });
+}
+
+async function findAndClickPlusButton(page) {
+    if (page.locator) {
+        // One comma-joined probe instead of 5 sequential 500ms-timeout checks.
+        const loc = page.locator(
+            'button[aria-label*="+" i], button[aria-label*="attach" i], button[aria-label*="add" i], button[data-testid*="plus" i], button[data-testid*="attach" i]'
+        ).first();
+        try {
+            if (await loc.isVisible({ timeout: 800 })) {
+                await loc.click({ timeout: 1000 });
+                return true;
+            }
+        } catch (_) {}
+    }
+    // Fall back to scanning composer buttons
+    return page.evaluate(() => {
+        const root = document.querySelector('form') || document.querySelector('#prompt-textarea')?.closest('div') || document.body;
+        const btns = [...root.querySelectorAll('button')];
+        const plusBtn = btns.find(b => {
+            const label = b.getAttribute('aria-label') || '';
+            const text = (b.innerText || b.textContent || '').trim();
+            return /\+|attach|add/i.test(label) || text === '+';
+        });
+        if (plusBtn) {
+            plusBtn.click();
+            return true;
+        }
+        return false;
+    });
+}
+
+async function ensureChatgptDeepResearchOn(page) {
+    if (!isChatgptDeepResearchActive()) return 'skipped';
+    try {
+        if (await isChatgptDeepResearchOn(page)) return 'already-on';
+
+        // Open composer "+" menu
+        const opened = await findAndClickPlusButton(page);
+        if (!opened) {
+            clog('⚠ Plus button not found for Deep research');
+            return 'missing';
+        }
+
+        await page.waitForTimeout?.(500);
+
+        // Find and click the menu row matching /Deep\s*research/i
+        let clickedRow = false;
+        if (page.locator) {
+            try {
+                const row = page.locator('[role="menuitem"], [role="option"], .popover div, [class*="menu-item"], div')
+                    .filter({ hasText: /Deep\s*research|深度研究/i })
+                    .first();
+                if (await row.isVisible({ timeout: 2000 })) {
+                    await row.click({ timeout: 2000 });
+                    clickedRow = true;
+                }
+            } catch (_) {}
+        }
+
+        if (!clickedRow) {
+            clickedRow = await page.evaluate(() => {
+                const elements = [...document.querySelectorAll('[role="menuitem"], [role="option"], .popover [role="button"], [class*="menu-item"], .popover div')];
+                const row = elements.find(el => {
+                    // Avoid matching a parent container that contains multiple items
+                    if (el.children && el.children.length > 2) return false;
+                    const text = (el.innerText || el.textContent || '').trim();
+                    return /Deep\s*research|深度研究/i.test(text);
+                });
+                if (row) {
+                    if (typeof row.click === 'function') row.click();
+                    try {
+                        const evt = typeof MouseEvent !== 'undefined' ? new MouseEvent('click', { bubbles: true, cancelable: true }) : (typeof window !== 'undefined' && window.MouseEvent ? new window.MouseEvent('click', { bubbles: true, cancelable: true }) : null);
+                        if (evt) row.dispatchEvent(evt);
+                    } catch (_) {}
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        if (!clickedRow) {
+            clog('⚠ Deep research menu row not found in plus menu');
+            return 'missing';
+        }
+
+        await page.waitForTimeout?.(500);
+
+        // Verify-by-effect: after the click the composer shows a deep-research active state
+        const active = await isChatgptDeepResearchOn(page);
+        if (active) return 'clicked';
+
+        // If no state is provable, log via logger and continue (fail-soft)
+        clog('Deep research row clicked but active state ambiguous — proceeding with default');
+        return 'ambiguous';
+    } catch (err) {
+        clog(`ensureChatgptDeepResearchOn error: ${err.message}`);
+        return 'error';
+    }
+}
+
 const adapter = {
     key: 'chatgpt',
     url: 'https://chatgpt.com/',
     authDomains: ['auth.openai.com', 'chat.openai.com/auth'],
+    // v35: Deep research runs 5-30 min. The 180s default per-provider budget
+    // SIGKILLs the call. Raised to the shared DR budget (30 min) when opted in.
+    providerTimeoutOverride: () => isChatgptDeepResearchActive() ? DEEP_RESEARCH_TIMEOUT_MS : undefined,
     navPostDelay: 4000, // ⚡ React SPA mounts ProseMirror ~2-3s after domcontentloaded
     quotaPatterns: [
         /reached.*(?:limit|quota|cap)/i,
@@ -275,9 +413,14 @@ const adapter = {
     },
 
     // Free ChatGPT: @Web search mention, then prompt, then Think.
+    // When deep research is opted in, ensure DR first and skip web search chip.
     // Keyboard append keeps the mention; paste-replace would wipe it.
     input: async (page, editor, prompt) => {
-        await ensureChatgptWebSearchOn(page);
+        if (isChatgptDeepResearchActive()) {
+            await ensureChatgptDeepResearchOn(page);
+        } else {
+            await ensureChatgptWebSearchOn(page);
+        }
         await placeCaretAfterComposerChips(page);
         const text = /^\s/.test(prompt) ? prompt : ' ' + prompt;
         await inputViaKeyboard(page, editor, text, { chunkSize: 150, yieldMs: 40 });
@@ -314,6 +457,8 @@ adapter.composerHasWebSearchChip = composerHasWebSearchChip;
 adapter.findWebSearchMenuItem = findWebSearchMenuItem;
 adapter._ensureChatgptThinkOn = ensureChatgptThinkOn;
 adapter._ensureChatgptWebSearchOn = ensureChatgptWebSearchOn;
+adapter._ensureChatgptDeepResearchOn = ensureChatgptDeepResearchOn;
+adapter._isChatgptDeepResearchActive = isChatgptDeepResearchActive;
 adapter._placeCaretAfterComposerChips = placeCaretAfterComposerChips;
 
 module.exports = adapter;

@@ -179,8 +179,8 @@ class InvocationContext {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Single source of truth: lib/providers/chain.js (also consumed by IndependentTasks,
-// which must NOT require this file — that would load playwright-core + 8 adapters).
-const { PROVIDER_CHAIN } = require('../lib/providers/chain');
+// which must NOT require this file — that would load playwright-core + 11 adapters).
+const { PROVIDER_CHAIN, PROVIDER_KEYS, DEEP_RESEARCH_TIMEOUT_MS } = require('../lib/providers/chain');
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PROVIDER RUNNERS — factory-built from adapter configs in lib/providers/adapters/
@@ -188,15 +188,17 @@ const { PROVIDER_CHAIN } = require('../lib/providers/chain');
 //   Gemini:  Pro Extended activation, bursty-output detection, 120s stop extension
 //   ChatGPT: 3-tier input (clipboard → simulated paste → chunked keyboard)
 //   Claude:  ProseMirror editor, Thinking placeholder filter
-//   Qwen:    React SPA 3s delay, stop-btn detached (not hidden), model-name strip
+//   Grok:    mode selector Auto/Fast/Expert (thinking), no search toggle (auto-grounding)
 //   Kimi:    New-session hook per call, .send-button-container disabled detection
+//   Qwen:    React SPA 3s delay, stop-btn detached (not hidden), model-name strip
 //   MiniMax: TipTap/ProseMirror async mount 4s delay
 //   ChatGLM: Zhipu AI React SPA, agentic tool/search phases
 //   Doubao:  ByteDance React SPA, agentic tool/search phases, stillWorkingCheck
 //   MiMo:    DOM-traversal send button, React SPA 4s delay
 //   DeepSeek: Standard pipeline, ds-markdown response
 
-const PROVIDER_KEYS = ['gemini','chatgpt','claude','qwen','kimi','minimax','chatglm','doubao','mimo','deepseek'];
+// PROVIDER_KEYS derived from chain.js (SSOT) — adding/reordering a provider
+// now means editing chain.js only. Adapter files must exist per key.
 const ADAPTER_CONFIGS = Object.fromEntries(
   PROVIDER_KEYS.map(k => [k, require(`../lib/providers/adapters/${k}`)])
 );
@@ -831,7 +833,11 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
 
         // v32: adapter can override the per-provider timeout (e.g. Gemini Pro
         // Extended needs 360s vs the 180s default for long thinking + search).
-        const override = ADAPTER_CONFIGS[provider.key]?.providerTimeoutOverride;
+        // May be a function — evaluated per call so env-gated modes (deep
+        // research) can raise the budget at runtime (argv is parsed after
+        // adapters are required, so require-time values can't see CLI flags).
+        const rawOverride = ADAPTER_CONFIGS[provider.key]?.providerTimeoutOverride;
+        const override = typeof rawOverride === 'function' ? rawOverride() : rawOverride;
         const perProvTimeout = Math.min(override || providerTimeout, remainingTotal);
 
         log(`\n▶ Provider ${i + 1}/${PROVIDER_CHAIN.length}: ${provider.name} (${Math.round(perProvTimeout / 1000)}s budget)`);
@@ -1018,7 +1024,8 @@ async function main() {
     let ephemeralTab = false;
 
     const USAGE =
-        'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
+        'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--deep-research] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
+        '       [--deep-research] (30min/provider budget, opt-in deep research mode)\n' +
         '       echo "prompt" | node index.js [flags]';
     // v14: usage errors exit 64 (BSD EX_USAGE), WITH a receipt. They used to
     // exit 1 — colliding with ERR_NO_CDP, so a caller-side bug (empty prompt)
@@ -1069,6 +1076,8 @@ async function main() {
             ephemeralTab = true;
         } else if (a === '--single') {
             singleAttempt = true;
+        } else if (a === '--deep-research') {
+            process.env.AGENTCHAT_DEEP_RESEARCH = '1';
         } else if (a === '--image') {
             // v14: image-generation intent — index.js appends the canonical
             // enhancement instruction itself (see IMAGE_ENHANCE_INSTRUCTION).
@@ -1117,6 +1126,14 @@ async function main() {
         } else {
             remaining.push(a);
         }
+    }
+
+    if (process.env.AGENTCHAT_DEEP_RESEARCH === '1') {
+        // DR runs take 5–30 min: raise BOTH budgets. A raised per-provider
+        // budget inside the default 10min total still dies at total_timeout
+        // mid-research.
+        customProvTimeout = Math.max(customProvTimeout || 0, DEEP_RESEARCH_TIMEOUT_MS);
+        customTimeout = Math.max(customTimeout || 0, DEEP_RESEARCH_TIMEOUT_MS);
     }
 
     // Read prompt
