@@ -37,7 +37,7 @@
 const fs = require("fs");
 const path = require("path");
 const { isCompressedPlan, expandSharedPlan, lintCompressedInvariants } = require("../lib/plan");
-const { PROVIDER_CHAIN } = require("../lib/providers/chain");
+const { PROVIDER_KEYS } = require("../lib/providers/chain");
 
 // ── args ──────────────────────────────────────────────────────────
 function usage(msg) {
@@ -84,7 +84,7 @@ for (const st of subtasks) {
 // ── --lint: pre-dispatch plan structure checks ────────────────────
 // 每一条都对应一次真实事故；派发前 30ms 的检查换后面 10 分钟浏览器时间。
 if (lintMode) {
-  const KNOWN = PROVIDER_CHAIN.map(p => p.key);
+  const KNOWN = PROVIDER_KEYS;
   const errs = [], warns = [];
 
   // ── Layer 0: compressed-format invariant checks ──────────────────

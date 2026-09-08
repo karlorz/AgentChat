@@ -24,31 +24,25 @@ try {
  * pointer events. Press Escape and wait until that selector is gone (retry up to 3×).
  */
 async function closeMenusAndWait(page) {
-    for (let i = 0; i < 3; i++) {
+    const checkInert = async () => {
         const inertLoc = page.locator ? page.locator('#portal-root [data-base-ui-inert]').first() : null;
-        let isInert = false;
         if (inertLoc && inertLoc.isVisible) {
-            isInert = await inertLoc.isVisible().catch(() => false);
-        } else if (page.evaluate) {
-            isInert = await page.evaluate(() => {
+            return inertLoc.isVisible().catch(() => false);
+        }
+        if (page.evaluate) {
+            return page.evaluate(() => {
                 return !!document.querySelector('#portal-root [data-base-ui-inert]');
             }).catch(() => false);
         }
-        if (!isInert && i > 0) break;
+        return false;
+    };
+    for (let i = 0; i < 3; i++) {
+        // Menu open <=> inert backdrop present; nothing to close when absent.
+        if (!(await checkInert())) break;
         if (page.keyboard && page.keyboard.press) {
             await page.keyboard.press('Escape').catch(() => {});
         }
         if (page.waitForTimeout) await page.waitForTimeout(100);
-        // If not inert now, we are done
-        let stillInert = false;
-        if (inertLoc && inertLoc.isVisible) {
-            stillInert = await inertLoc.isVisible().catch(() => false);
-        } else if (page.evaluate) {
-            stillInert = await page.evaluate(() => {
-                return !!document.querySelector('#portal-root [data-base-ui-inert]');
-            }).catch(() => false);
-        }
-        if (!stillInert) break;
     }
 }
 
@@ -213,9 +207,8 @@ async function openClaudeEffortSubmenu(page) {
  * find menuitemcheckbox matching /^Thinking\b/i; if aria-checked 'true' -> already-on;
  * if 'false' -> click + verify; missing -> log + 'missing'. Finish with closeMenusAndWait.
  *
- * (Can accept options: { keepOpen: true } if called in batch with ensureClaudeEffort)
  */
-async function ensureClaudeThinkingOn(page, options = {}) {
+async function ensureClaudeThinkingOn(page) {
     if (process.env.AGENTCHAT_CLAUDE_NO_THINK === '1') {
         clog('Thinking opt-out (AGENTCHAT_CLAUDE_NO_THINK=1)');
         return 'skipped';
@@ -245,7 +238,7 @@ async function ensureClaudeThinkingOn(page, options = {}) {
         const checked = await thinkingItem.getAttribute('aria-checked');
         if (checked === 'true') {
             clog('Thinking already active');
-            if (!options.keepOpen) await closeMenusAndWait(page);
+            await closeMenusAndWait(page);
             return 'already-on';
         }
 
@@ -262,7 +255,7 @@ async function ensureClaudeThinkingOn(page, options = {}) {
             }
         }
 
-        if (!options.keepOpen) await closeMenusAndWait(page);
+        await closeMenusAndWait(page);
         if (nowChecked === 'true') {
             clog('Thinking activated');
             return 'clicked';
@@ -281,9 +274,8 @@ async function ensureClaudeThinkingOn(page, options = {}) {
  * In the same Effort submenu click the matching menuitemradio (word-boundary match; NEVER Extra/Max).
  * Default (env unset): leave the page setting untouched.
  *
- * (Can accept options: { keepOpen: true })
  */
-async function ensureClaudeEffort(page, options = {}) {
+async function ensureClaudeEffort(page) {
     const rawEffort = (process.env.AGENTCHAT_CLAUDE_EFFORT || '').trim().toLowerCase();
     if (!rawEffort || !['low', 'medium', 'high'].includes(rawEffort)) {
         return 'skipped';
@@ -316,14 +308,14 @@ async function ensureClaudeEffort(page, options = {}) {
         const checked = await targetRadio.getAttribute('aria-checked');
         if (checked === 'true') {
             clog(`Effort already ${rawEffort}`);
-            if (!options.keepOpen) await closeMenusAndWait(page);
+            await closeMenusAndWait(page);
             return 'already-on';
         }
 
         await targetRadio.click({ timeout: 2500 });
         if (page.waitForTimeout) await page.waitForTimeout(150);
 
-        if (!options.keepOpen) await closeMenusAndWait(page);
+        await closeMenusAndWait(page);
         clog(`Effort set to ${rawEffort}`);
         return 'clicked';
     } catch (e) {

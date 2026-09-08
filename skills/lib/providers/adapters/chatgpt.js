@@ -74,12 +74,6 @@ function findWebSearchMenuItem(items) {
     return null;
 }
 
-async function mouseClickCenter(page, box) {
-    if (!box || !page.mouse) return false;
-    await page.mouse.click(box.x + box.w / 2, box.y + box.h / 2);
-    return true;
-}
-
 async function placeCaretAfterComposerChips(page) {
     try {
         await page.evaluate(() => {

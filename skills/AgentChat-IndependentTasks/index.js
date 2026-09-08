@@ -56,8 +56,8 @@ const WEBEXT = path.resolve(__dirname, "..", "AgentChat-OneWeb", "index.js");
 // Single source of truth: lib/providers/chain.js (shared with OneWeb).
 // Previously this required OneWeb's index.js just to read a constant,
 // dragging in playwright-core + all 8 adapter modules at orchestrator startup.
-const { PROVIDER_CHAIN } = require('../lib/providers/chain');
-const FALLBACK_CHAIN = PROVIDER_CHAIN.map(p => p.key);
+const { PROVIDER_CHAIN, PROVIDER_KEYS } = require('../lib/providers/chain');
+const FALLBACK_CHAIN = PROVIDER_KEYS;
 
 // Single alias map for normalizeAI and the strict exclude parser: canonical
 // keys pass through (identity), plus real aliases (gpt → chatgpt).
