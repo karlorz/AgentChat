@@ -1639,6 +1639,7 @@ const CLOSE_BTN_SEL = [
     'button:has-text("关闭")', 'button:has-text("Got it")',
     'button:has-text("Accept")', 'button:has-text("同意")',
     'button:has-text("知道了")', 'button:has-text("继续")',
+    'button:has-text("Not now")', // preference/announcement modals (e.g. Claude memory review) — never commits settings
     '[class*="close" i]', 'svg[class*="close" i]',
 ];
 
@@ -1869,8 +1870,14 @@ function createProviderRunner(cfg) {
         }
 
         // ── Step 3.5: Quota check (post-overlay body scan) ──
+        // Scoped to <main> (falling back to body): whole-body scans matched
+        // sidebar RECENT-CHAT TITLES (e.g. a chat named "Compare Free Tier
+        // Limits" tripped /free\s*(plan|tier)\s*limit/i) — a false 'quota'
+        // that skipped a healthy provider for the whole run. Real quota
+        // notices render in the conversation/composer region inside <main>.
         try {
-            const bodyText = await page.evaluate(() => document.body?.innerText || '');
+            const bodyText = await page.evaluate(() =>
+                (document.querySelector('main') || document.body)?.innerText || '');
             for (const pattern of (C.quotaPatterns || [])) {
                 if (pattern.test(bodyText)) {
                     return classifyError(

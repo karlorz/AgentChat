@@ -230,34 +230,68 @@ async function isChatgptDeepResearchOn(page) {
     });
 }
 
-async function findAndClickPlusButton(page) {
-    if (page.locator) {
-        // One comma-joined probe instead of 5 sequential 500ms-timeout checks.
-        const loc = page.locator(
-            'button[aria-label*="+" i], button[aria-label*="attach" i], button[aria-label*="add" i], button[data-testid*="plus" i], button[data-testid*="attach" i]'
-        ).first();
-        try {
-            if (await loc.isVisible({ timeout: 800 })) {
-                await loc.click({ timeout: 1000 });
-                return true;
-            }
-        } catch (_) {}
-    }
-    // Fall back to scanning composer buttons
+/**
+ * Find the smallest visible element whose text starts with /Deep research/i
+ * (the composer "+" menu row; the menu is a custom ChatGPT popup with plain
+ * div/span rows — no ARIA roles — so role-based locators never match).
+ * Returns center coordinates for a real mouse click, or null.
+ */
+async function findDeepResearchRowCenter(page) {
     return page.evaluate(() => {
-        const root = document.querySelector('form') || document.querySelector('#prompt-textarea')?.closest('div') || document.body;
-        const btns = [...root.querySelectorAll('button')];
-        const plusBtn = btns.find(b => {
-            const label = b.getAttribute('aria-label') || '';
-            const text = (b.innerText || b.textContent || '').trim();
-            return /\+|attach|add/i.test(label) || text === '+';
-        });
-        if (plusBtn) {
-            plusBtn.click();
-            return true;
-        }
-        return false;
-    });
+        // The composer "+" menu is a custom popup (plain div/span rows, no ARIA
+        // roles). Only trust candidates while the trigger reports expanded, and
+        // require the row to be inside the viewport and ADJACENT to the plus
+        // button — the menu opens upward from the bottom chat composer but
+        // DOWNWARD from the centered home composer. Sidebar chat titles like
+        // "Deep research…" sit far left (x≈16) and are excluded by the x-band.
+        const plus = document.querySelector('button[aria-label*="Add files" i]');
+        if (!plus || plus.getAttribute('aria-expanded') !== 'true') return null;
+        const pr = plus.getBoundingClientRect();
+        const cands = [...document.querySelectorAll('div, span, li, button')]
+            .filter(el => {
+                const t = (el.innerText || '').replace(/\s+/g, ' ').trim();
+                if (!/^Deep research\b/i.test(t) || t.length > 60) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 50 || r.height < 10 || el.offsetParent === null) return false;
+                if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) return false;
+                if (Math.abs(r.y - pr.y) > 500) return false;
+                if (r.x < pr.x - 100 || r.x > pr.x + 500) return false;
+                return true;
+            })
+            .map(el => {
+                const r = el.getBoundingClientRect();
+                return { x: r.x, y: r.y, w: r.width, h: r.height, kids: el.childElementCount };
+            })
+            .sort((a, b) => a.kids - b.kids || a.w - b.w);
+        const c = cands[0];
+        return c ? { x: c.x + c.w / 2, y: c.y + c.h / 2 } : null;
+    }).catch(() => null);
+}
+
+/**
+ * Click with a REAL mouse event (page.mouse). Accepts either a Locator
+ * (clicked at its bounding-box center) or a bare {x, y} point already at the
+ * target. The composer "+" menu needs real input: synthetic locator clicks
+ * flip aria-expanded but the menu's handlers don't fire reliably.
+ */
+async function mouseClickCenter(page, locOrPoint) {
+    let cx, cy;
+    const isPoint = locOrPoint.x !== undefined && locOrPoint.y !== undefined
+        && locOrPoint.w === undefined && locOrPoint.h === undefined
+        && locOrPoint.width === undefined && locOrPoint.height === undefined;
+    if (isPoint) {
+        cx = locOrPoint.x; cy = locOrPoint.y;
+    } else {
+        const box = locOrPoint.x !== undefined ? locOrPoint : await locOrPoint.boundingBox();
+        if (!box) return false;
+        const w = box.w !== undefined ? box.w : box.width;
+        const h = box.h !== undefined ? box.h : box.height;
+        cx = box.x + w / 2; cy = box.y + h / 2;
+    }
+    if (!Number.isFinite(cx) || !Number.isFinite(cy)) return false;
+    await page.mouse.move(cx, cy);
+    await page.mouse.click(cx, cy);
+    return true;
 }
 
 async function ensureChatgptDeepResearchOn(page) {
@@ -265,62 +299,66 @@ async function ensureChatgptDeepResearchOn(page) {
     try {
         if (await isChatgptDeepResearchOn(page)) return 'already-on';
 
-        // Open composer "+" menu
-        const opened = await findAndClickPlusButton(page);
-        if (!opened) {
-            clog('⚠ Plus button not found for Deep research');
-            return 'missing';
-        }
-
-        await page.waitForTimeout?.(500);
-
-        // Find and click the menu row matching /Deep\s*research/i
-        let clickedRow = false;
-        if (page.locator) {
-            try {
-                const row = page.locator('[role="menuitem"], [role="option"], .popover div, [class*="menu-item"], div')
-                    .filter({ hasText: /Deep\s*research|深度研究/i })
-                    .first();
-                if (await row.isVisible({ timeout: 2000 })) {
-                    await row.click({ timeout: 2000 });
-                    clickedRow = true;
-                }
-            } catch (_) {}
-        }
-
-        if (!clickedRow) {
-            clickedRow = await page.evaluate(() => {
-                const elements = [...document.querySelectorAll('[role="menuitem"], [role="option"], .popover [role="button"], [class*="menu-item"], .popover div')];
-                const row = elements.find(el => {
-                    // Avoid matching a parent container that contains multiple items
-                    if (el.children && el.children.length > 2) return false;
-                    const text = (el.innerText || el.textContent || '').trim();
-                    return /Deep\s*research|深度研究/i.test(text);
-                });
-                if (row) {
-                    if (typeof row.click === 'function') row.click();
-                    try {
-                        const evt = typeof MouseEvent !== 'undefined' ? new MouseEvent('click', { bubbles: true, cancelable: true }) : (typeof window !== 'undefined' && window.MouseEvent ? new window.MouseEvent('click', { bubbles: true, cancelable: true }) : null);
-                        if (evt) row.dispatchEvent(evt);
-                    } catch (_) {}
-                    return true;
-                }
+        // Open composer "+" menu with a real mouse click (locator clicks are
+        // ignored by this trigger), then wait for the DR row to render.
+        if (page.locator && page.mouse && page.mouse.click) {
+            const plus = page.locator('button[aria-label*="Add files" i]').first();
+            if (!(await plus.isVisible().catch(() => false))) {
+                clog('⚠ Plus button not found for Deep research');
+                return 'missing';
+            }
+            // Fresh pages mount the menu lazily — the first click can be
+            // swallowed during hydration. Poll up to ~8s, re-clicking the
+            // trigger whenever the menu is closed and the row isn't found.
+            let center = null;
+            for (let i = 0; i < 20 && !center; i++) {
+                const expanded = await plus.getAttribute('aria-expanded').catch(() => null);
+                if (expanded !== 'true') await mouseClickCenter(page, plus);
+                await page.waitForTimeout?.(400);
+                center = await findDeepResearchRowCenter(page);
+            }
+            if (!center) {
+                clog('⚠ Deep research menu row not found in plus menu');
+                await page.keyboard?.press('Escape').catch(() => {});
+                return 'missing';
+            }
+            await mouseClickCenter(page, center);
+            await page.waitForTimeout?.(1200);
+        } else {
+            // Mock/jsdom seam for unit tests: no real pointer layer — the
+            // menu is opened and the row chosen via synthetic clicks.
+            const opened = await page.evaluate(() => {
+                const b = [...document.querySelectorAll('button')]
+                    .find(x => /add|\+|attach/i.test(x.getAttribute('aria-label') || ''));
+                if (b) b.click();
+                return !!b;
+            });
+            if (!opened) {
+                clog('⚠ Plus button not found for Deep research');
+                return 'missing';
+            }
+            await page.waitForTimeout?.(250);
+            const clickedRow = await page.evaluate(() => {
+                const el = [...document.querySelectorAll('div, span, li, button')]
+                    .filter(x => {
+                        const t = (x.innerText || x.textContent || '').trim();
+                        return /^Deep research\b/i.test(t) && t.length < 60;
+                    })
+                    .sort((a, b) => a.childElementCount - b.childElementCount)[0];
+                if (el && typeof el.click === 'function') { el.click(); return true; }
                 return false;
             });
+            if (!clickedRow) {
+                clog('⚠ Deep research menu row not found in plus menu');
+                return 'missing';
+            }
+            await page.waitForTimeout?.(250);
         }
 
-        if (!clickedRow) {
-            clog('⚠ Deep research menu row not found in plus menu');
-            return 'missing';
-        }
-
-        await page.waitForTimeout?.(500);
-
-        // Verify-by-effect: after the click the composer shows a deep-research active state
+        // Verify-by-effect: composer shows a "Deep research" hint chip
         const active = await isChatgptDeepResearchOn(page);
         if (active) return 'clicked';
 
-        // If no state is provable, log via logger and continue (fail-soft)
         clog('Deep research row clicked but active state ambiguous — proceeding with default');
         return 'ambiguous';
     } catch (err) {
