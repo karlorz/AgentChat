@@ -837,8 +837,15 @@ async function dumpResponseDiagnostics(page, log = () => {}) {
 // stability poller and extractResponse — any fix to one silently missed the
 // other (exact drift class the factory exists to prevent). Runs IN-PAGE via
 // locator.evaluate; must stay self-contained (no outer-scope references).
-const IN_PAGE_TEXT_WITH_MATH = (el) => {
+const IN_PAGE_TEXT_WITH_MATH = (el, excludeSels) => {
     const clone = el.cloneNode(true);
+    if (Array.isArray(excludeSels) && excludeSels.length > 0) {
+        for (const sel of excludeSels) {
+            if (sel && typeof sel === 'string') {
+                clone.querySelectorAll(sel).forEach(node => node.remove());
+            }
+        }
+    }
     clone.querySelectorAll('.katex').forEach(node => {
         const ann = node.querySelector('annotation[encoding="application/x-tex"]');
         if (ann) {
@@ -1088,7 +1095,7 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
         // Fast path out: page/context gone → no point polling further.
         if (page.isClosed()) { tick('?'); break; }
         try {
-            const text = await responseEl.evaluate(IN_PAGE_TEXT_WITH_MATH);
+            const text = await responseEl.evaluate(IN_PAGE_TEXT_WITH_MATH, config.responseExcludeSelectors || []);
             consecutiveErrors = 0;
 
             const now = Date.now();
@@ -1407,7 +1414,9 @@ function effectiveMinResponseLength(prompt, configured = 10) {
 }
 
 async function extractResponse(page, responseEl, config, prompt, baselineText) {
-    let text = (await responseEl.evaluate(IN_PAGE_TEXT_WITH_MATH)).trim();
+    const excludeSels = (config && Array.isArray(config.responseExcludeSelectors))
+        ? config.responseExcludeSelectors : [];
+    let text = (await responseEl.evaluate(IN_PAGE_TEXT_WITH_MATH, excludeSels)).trim();
 
     // v34: see effectiveMinResponseLength — the gate scales with prompt length.
     const effectiveMinLen = effectiveMinResponseLength(prompt, config.minResponseLength);
@@ -2093,7 +2102,7 @@ function createProviderRunner(cfg) {
             baselineCounts[sel] = n;
             if (n > 0) {
                 const t = await page.locator(sel).last()
-                    .evaluate(IN_PAGE_TEXT_WITH_MATH).catch(() => '');
+                    .evaluate(IN_PAGE_TEXT_WITH_MATH, C.responseExcludeSelectors || []).catch(() => '');
                 baselineText[sel] = String(t || '').trim();
             }
         }));

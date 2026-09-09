@@ -17,7 +17,7 @@ const { makeStillWorkingCheck } = require('../../stillWorking');
 // flow-ext-disable-selec).  Prefix-based [class*="…"] selectors survive
 // hash rotation across builds.
 const RESPONSE_SELECTORS = [
-    '[class*="message-list"]',                  // primary: chat message list (CSS Module hash: message-list-zLoNs1)
+    '[class*="message-list"]:not([class*="suggest"])', // primary: chat message list (CSS Module hash: message-list-zLoNs1; exclude suggest wrapper)
     '[class*="flow-ext-disable"]',              // main chat content area
     '[class*="markdown"]',
     '[class*="message-content"]',
@@ -61,6 +61,7 @@ module.exports = {
         '[data-testid="stop-button"]',
     ],
     responseSelectors: RESPONSE_SELECTORS,
+    responseExcludeSelectors: ['[class*="suggest"]'],
     stabilityWindow: 10_000,
     minResponseLength: 5,
 
