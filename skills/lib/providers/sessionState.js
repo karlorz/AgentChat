@@ -295,8 +295,12 @@ function isLoggedOut(snap, provider) {
  */
 function claudeSendBlocked(snap, provider) {
     if (!provider || provider.key !== 'claude') return null;
+    // The org API verdict is authoritative: api_disabled_reason === null means
+    // healthy. A send-probe no-op on top of that is a probe artifact (fresh-tab
+    // hydration, ProseMirror rejecting the synthetic insert), not a disabled org.
+    if (snap.orgHealthy) return null;
     if (snap.sendNoop) return snap.sendNoopReason || 'send-probe no-op';
-    if (snap.sendOk || snap.orgHealthy) return null;
+    if (snap.sendOk) return null;
     return 'claude send-probe/org check did not confirm send works';
 }
 

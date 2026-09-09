@@ -248,6 +248,19 @@ r = classifySession({
 }, claude);
 ok(r.status === STATUSES.ORG_DISABLED, 'Claude send-probe no-op -> org_disabled', r.status);
 
+// 2026-09-10 live false positive: org API healthy (api_disabled_reason null)
+// + send-probe no-op (fresh-tab probe artifact) was misclassified org_disabled.
+// The org API verdict must veto probe artifacts.
+r = classifySession({
+    url: 'https://claude.ai/new',
+    text: 'Evening, karl',
+    hasEditor: true,
+    orgHealthy: true,
+    sendNoop: true,
+    sendNoopReason: 'send-probe no-op',
+}, claude);
+ok(r.status === STATUSES.READY, 'Claude orgHealthy vetoes send-probe no-op -> ready', r.status + ' ' + r.evidence);
+
 r = classifySession({
     url: 'https://claude.ai/new',
     text: 'Evening, karl',
