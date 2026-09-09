@@ -137,7 +137,14 @@ const server = http.createServer(async (req, res) => {
         return res.end();
     }
 
-    const url = new URL(req.url, `http://localhost:${PORT}`);
+    // Malformed paths (e.g. "//") must never crash the server: 400, not throw.
+    let url;
+    try {
+        url = new URL(req.url, `http://localhost:${PORT}`);
+    } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        return res.end('Bad Request');
+    }
 
     // Helper: read request body safely (handles multi-byte UTF-8 split across TCP chunks)
     function readBody(req) {
