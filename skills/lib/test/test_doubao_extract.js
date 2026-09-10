@@ -209,6 +209,25 @@ function makeMockLocator(domElement, win) {
         assert.strictEqual(out, 'some reply text今天 12:49', 'must fall back to full trimmed text');
     });
 
+    await test('postResponseHook also cuts at 昨天 (yesterday) turn markers', async () => {
+        const echoed = 'old prompt昨天 23:10older replynew prompt今天 08:02fresh reply';
+        const out = await doubao.postResponseHook(null, echoed, {});
+        assert.strictEqual(out, 'fresh reply', 'last marker wins regardless of 今天/昨天');
+    });
+
+    await test('postResponseHook contract: a reply containing its own 今天 HH:MM loses everything before it', async () => {
+        // Documented behavior, not a bug to fix silently: the hook cuts at the
+        // LAST marker, so a reply mentioning a time keeps only what follows it.
+        const out = await doubao.postResponseHook(null, 'prompt今天 12:49see you at 今天 18:00 sharp', {});
+        assert.strictEqual(out, 'sharp', 'pins the last-marker contract');
+    });
+
+    await test('postResponseHook ignores English-locale times (zh markers only)', async () => {
+        const en = 'prompt Today 12:49 reply text';
+        const out = await doubao.postResponseHook(null, en, {});
+        assert.strictEqual(out, en, 'English timestamps must pass through unchanged');
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     process.exit(failed > 0 ? 1 : 0);
 })();

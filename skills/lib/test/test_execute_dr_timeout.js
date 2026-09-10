@@ -87,6 +87,20 @@ function clearDrEnv() {
         }
     });
 
+    test('provider key is case-insensitive against the env var name', () => {
+        process.env.AGENTCHAT_QWEN_DEEP_RESEARCH = '1';
+        try {
+            assert.strictEqual(_effectiveCallTimeoutMs('Qwen', 180_000), 1_800_000);
+        } finally {
+            delete process.env.AGENTCHAT_QWEN_DEEP_RESEARCH;
+        }
+    });
+
+    test('null/undefined provider does not throw and returns base budget', () => {
+        assert.strictEqual(_effectiveCallTimeoutMs(null, 180_000), 180_000);
+        assert.strictEqual(_effectiveCallTimeoutMs(undefined, 180_000), 180_000);
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     process.exit(failed > 0 ? 1 : 0);
 })();
