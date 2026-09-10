@@ -183,6 +183,32 @@ function makeMockLocator(domElement, win) {
         }
     });
 
+    // ── postResponseHook: prompt-echo cut at last turn timestamp ──
+
+    await test('postResponseHook strips user-turn echo through last 今天 HH:MM timestamp', async () => {
+        const echoed = 'Reply with: DOUBAO OK今天 12:49DOUBAO OK';
+        const out = await doubao.postResponseHook(null, echoed, {});
+        assert.strictEqual(out, 'DOUBAO OK', 'must keep only the reply tail');
+    });
+
+    await test('postResponseHook keeps the LAST reply in a multi-turn transcript', async () => {
+        const multi = 'first question今天 10:01first answersecond question今天 10:05second answer';
+        const out = await doubao.postResponseHook(null, multi, {});
+        assert.strictEqual(out, 'second answer');
+    });
+
+    await test('postResponseHook leaves timestamp-free text unchanged (trimmed)', async () => {
+        const plain = '  A clean reply with no turn timestamps.  ';
+        const out = await doubao.postResponseHook(null, plain, {});
+        assert.strictEqual(out, 'A clean reply with no turn timestamps.');
+    });
+
+    await test('postResponseHook never returns empty: falls back when tail after timestamp is empty', async () => {
+        const dangling = 'some reply text今天 12:49';
+        const out = await doubao.postResponseHook(null, dangling, {});
+        assert.strictEqual(out, 'some reply text今天 12:49', 'must fall back to full trimmed text');
+    });
+
     console.log(`\n${passed} passed, ${failed} failed`);
     process.exit(failed > 0 ? 1 : 0);
 })();

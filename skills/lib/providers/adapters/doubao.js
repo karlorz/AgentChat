@@ -68,4 +68,19 @@ module.exports = {
     // Agentic tool/search phase detection — same pattern as MiniMax/MiMo/Kimi.
     stillGeneratingCheck: makeStillWorkingCheck({ responseSelectors: RESPONSE_SELECTORS }),
     stillGeneratingMaxHoldMs: 120_000,
+
+    // The message-list container includes user turns: extraction yields
+    // "<prompt echo>今天 HH:MM<reply>". The last turn timestamp marks the
+    // boundary — cut everything through it. Falls back to the full text when
+    // no timestamp exists or the tail would be empty (older turns may use
+    // 昨天/date stamps; only cut on the observed 今天/昨天 HH:MM shapes).
+    postResponseHook: async (_page, text) => {
+        const matches = [...text.matchAll(/(?:今天|昨天)\s*\d{1,2}:\d{2}/g)];
+        if (matches.length) {
+            const last = matches[matches.length - 1];
+            const tail = text.slice(last.index + last[0].length).trim();
+            if (tail) return tail;
+        }
+        return text.trim();
+    },
 };

@@ -108,6 +108,20 @@ Phase B live lessons (both cost a failed run):
   and is NOT closed by Escape — dismiss via the safe "Not now" button (never
   "Save preferences"). Factory CLOSE_BTN_SEL now includes "Not now".
 
+## Captcha / risk-control walls (attended-only)
+
+- CN providers (observed on ChatGLM) may gate a tab with a slider
+  ("Please slide to verify", `.captcha-content-container`). This is
+  anti-automation risk control — NEVER automate the slide; behavioral
+  detection fails silently later and risks the account.
+- Designed handling: the classifier reports the tab as not-ready/auth and the
+  fallback chain skips to the next provider. Record as skipped, never as a
+  secret/credential failure.
+- Resolution is attended: the user slides once in the debug Chrome tab; the
+  session then passes. Observed 2026-09-10: the wall recurred ~40 min after a
+  manual slide when automated sends resumed — expect recurrence, keep sends
+  on the persistent warm tab.
+
 ## Verification rules
 
 - Unit: zero-dep runner `node test/run.js` (jsdom), one test file per adapter
