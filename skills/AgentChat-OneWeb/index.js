@@ -67,7 +67,12 @@ try {
     process.exit(4);
 }
 const { ProviderError, classifyError } = require('../lib/errors');
-const { createProviderRunner, appendWithRotation } = require('../lib/providerFactory');
+const {
+    createProviderRunner,
+    appendWithRotation,
+    validateChatGptConversationUrl,
+    resumeChatGptConversation,
+} = require('../lib/providerFactory');
 const { makeRunId, emitReceipt } = require('../lib/receipt');
 const { log: _log, startTimer: _startTimer, spinner } = require('../lib/terminal');
 const { connectWithRetry: _connectWithRetry, doctorCheck: _doctorCheck, ensureChromeCdp, startHint, isWSL, CDP_URL: LIB_CDP_URL } = require('../lib/cdp');
@@ -100,6 +105,16 @@ function emitStructuredFailure(reasons) {
         }
         process.stderr.write(`[oneweb] AGENTCHAT_ERR ${JSON.stringify({ reasons: compact })}\n`);
     } catch (_) { /* diagnostics must never break the failure path itself */ }
+}
+
+function formatPendingLine(result = {}) {
+    const conversationUrl = validateChatGptConversationUrl(result.conversation_url);
+    return `[oneweb] AGENTCHAT_PENDING ${JSON.stringify({
+        status: 'submitted_pending',
+        provider: result.provider || 'chatgpt',
+        ...(conversationUrl ? { conversation_url: conversationUrl } : {}),
+        safe_to_resend: false,
+    })}`;
 }
 const startTimer = (label) => _startTimer(PREFIX, label);
 const connectWithRetry = (cdpUrl, retries) => _connectWithRetry(chromium, cdpUrl, retries, log);
@@ -160,6 +175,10 @@ class InvocationContext {
                 provider_used: this.telemetry.provider_used,
                 providers_tried: this.telemetry.providers_tried,
                 total_ms: this.telemetry.total_ms,
+                ...(this.telemetry.outcome ? { outcome: this.telemetry.outcome } : {}),
+                ...(this.telemetry.safe_to_resend !== undefined
+                    ? { safe_to_resend: this.telemetry.safe_to_resend }
+                    : {}),
                 // v14: image-download results ride in the receipt — in piped
                 // (non-TTY) mode the markdown summary no longer pollutes the
                 // stdout machine contract, so this is the machine-readable
@@ -180,7 +199,9 @@ class InvocationContext {
 
 // Single source of truth: lib/providers/chain.js (also consumed by IndependentTasks,
 // which must NOT require this file — that would load playwright-core + 11 adapters).
-const { PROVIDER_CHAIN, PROVIDER_KEYS, DEEP_RESEARCH_TIMEOUT_MS } = require('../lib/providers/chain');
+const chainModule = require('../lib/providers/chain');
+const { PROVIDER_CHAIN, DEEP_RESEARCH_TIMEOUT_MS } = chainModule;
+const PROVIDER_KEYS = chainModule.PROVIDER_KEYS || PROVIDER_CHAIN.map(p => p.key);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PROVIDER RUNNERS — factory-built from adapter configs in lib/providers/adapters/
@@ -864,7 +885,7 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
             await ensureClipboardPermissions();
 
             // Dispatch to provider runner (each receives ctx for telemetry tracking)
-            const runner = RUNNERS[provider.key];
+            const runner = (options.runners || RUNNERS)[provider.key];
             result = runner
                 ? await runner(page, prompt, perProvTimeout, ctx, { images: options.images })
                 : classifyError(new Error(`Unknown provider: ${provider.key}`), 'navigate', provider.key);
@@ -877,6 +898,20 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
         }
 
         triedProviders.push(provider.key);
+        if (result.pending) {
+            ctx.telemetry.provider_used = provider.name;
+            ctx.telemetry.providers_tried = triedProviders;
+            ctx.telemetry.fallback_reasons = fallbackReasons;
+            ctx.telemetry.total_ms = Date.now() - overallStart;
+            return {
+                pending: true,
+                success: false,
+                provider: result.provider || provider.key,
+                safe_to_resend: false,
+                ...(result.conversation_url ? { conversation_url: result.conversation_url } : {}),
+                page: result.page || page,
+            };
+        }
         if (!result.success) {
             // Close failed provider's tab ONLY if we created it — a reused tab
             // belongs to the user / a previous session and must be left alone.
@@ -922,7 +957,7 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
         // download must reuse this tab's session cookies (session-gated image
         // endpoints 403 a cookieless download). May already be closed when
         // --close was used; consumers must guard with page.isClosed().
-        return { success: true, response: result.response, provider: provider.name, page };
+        return { success: true, response: result.response, provider: provider.name, page: result.page || page };
     }
 
     // All providers exhausted
@@ -1015,6 +1050,7 @@ async function main() {
     let downloadImages = true; // download images from response to cwd (--no-download-images to disable)
     let imageIntent = false;   // v14 --image: append IMAGE_ENHANCE_INSTRUCTION in-process
     let imagePaths = [];       // v24 --image-path: image files to upload before sending prompt
+    let resumeChatGptUrl = null;
     // v19 --ephemeral-tab: run in a DEDICATED new tab (never reuse an existing
     // provider tab; close our tab on exit). Required for same-provider
     // concurrency (AGENTCHAT_MAX_TABS_PER_PROVIDER > 1): with reuse, two
@@ -1025,6 +1061,7 @@ async function main() {
 
     const USAGE =
         'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--deep-research] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
+        '       node index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" [--timeout=MS]\n' +
         '       [--deep-research] (30min/provider budget, opt-in deep research mode)\n' +
         '       echo "prompt" | node index.js [flags]';
     // v14: usage errors exit 64 (BSD EX_USAGE), WITH a receipt. They used to
@@ -1036,6 +1073,13 @@ async function main() {
         console.error(USAGE);
         ctx.recordTelemetry(64);
         process.exit(64);
+    };
+    const finishPending = (result) => {
+        ctx.telemetry.outcome = 'submitted_pending';
+        ctx.telemetry.safe_to_resend = false;
+        process.stderr.write(formatPendingLine(result) + '\n');
+        ctx.recordTelemetry(10);
+        process.exit(10);
     };
 
     // Timeouts are milliseconds. Values < 10000 are almost certainly seconds
@@ -1067,6 +1111,10 @@ async function main() {
             const v = parseInt(a.split('=')[1], 10);
             if (!isNaN(v) && v > 0) customProvTimeout = normalizeTimeout(v);
             else log(`WARN: ignoring invalid ${a} (expected a positive integer in ms)`);
+        } else if (a.startsWith('--resume-chatgpt=')) {
+            const candidate = a.slice('--resume-chatgpt='.length);
+            resumeChatGptUrl = validateChatGptConversationUrl(candidate);
+            if (!resumeChatGptUrl) usageExit('invalid ChatGPT conversation URL');
         } else if (a === '--keep-tabs') {
             keepTabs = true;
         } else if (a === '--close' || a === '--close-browser') {
@@ -1138,7 +1186,7 @@ async function main() {
 
     // Read prompt
     let prompt = remaining.join(' ').trim();
-    if (!prompt && !args.includes('--smoke') && !process.stdin.isTTY) {
+    if (!prompt && !args.includes('--smoke') && !resumeChatGptUrl && !process.stdin.isTTY) {
         // Try stdin — but only when something is actually piped in.
         // On an interactive TTY this used to hang forever instead of printing usage.
         const chunks = [];
@@ -1146,7 +1194,10 @@ async function main() {
         for await (const chunk of process.stdin) chunks.push(chunk);
         prompt = chunks.join('').trim();
     }
-    if (!prompt && !args.includes('--smoke')) {
+    if (resumeChatGptUrl && prompt) {
+        usageExit('--resume-chatgpt cannot be combined with a new prompt');
+    }
+    if (!prompt && !args.includes('--smoke') && !resumeChatGptUrl) {
         usageExit('no prompt given');
     }
 
@@ -1249,6 +1300,28 @@ async function main() {
             process.exit(0);
         }
 
+        if (resumeChatGptUrl) {
+            const context = browser.contexts()[0];
+            if (!context) throw new Error('No active browser context.');
+            const resumed = await resumeChatGptConversation(
+                context,
+                resumeChatGptUrl,
+                ADAPTER_CONFIGS.chatgpt,
+                customTimeout
+            );
+            ctx.telemetry.provider_used = 'ChatGPT';
+            ctx.telemetry.providers_tried = ['chatgpt'];
+            ctx.telemetry.total_ms = Date.now() - new Date(ctx.telemetry.timestamp).getTime();
+            if (resumed.success) {
+                ctx.telemetry.response_length_chars = resumed.response.length;
+                ctx.recordTelemetry(0);
+                process.stdout.once('error', () => process.exit(0));
+                process.stdout.write(resumed.response + '\n', () => process.exit(0));
+                return;
+            }
+            finishPending(resumed);
+        }
+
         // ── v17: browser-level admission control ──
         // Provider locks (in the orchestrators) serialize same-provider access;
         // this caps how many page automations run CONCURRENTLY in the ONE
@@ -1286,6 +1359,10 @@ async function main() {
             });
         } finally {
             releaseBrowserSlot(browserSlot);
+        }
+
+        if (result.pending) {
+            finishPending(result);
         }
 
         if (result.success) {
@@ -1419,6 +1496,8 @@ if (require.main === module) {
 
 module.exports = {
     PROVIDER_CHAIN,
+    formatPendingLine,
+    tryAllProviders,
     // v13: exported for tests and for IndependentTasks' own post-processing
     extractImageUrls,
     downloadAllImages,

@@ -247,6 +247,32 @@ AGENTCHAT_ENV_FILE=/path/to/AgentChat/.env \
 
 **未找到任何 .env 时**：stderr 立即输出 `[agentchat-env] NOT LOADED — 候选列表 + 3 修复选项`（不烧 provider 预算再失败）。成功时仅一行 `[agentchat-env] loaded <path>`，无密钥回显。
 
+### Quota-safe ChatGPT timeout recovery (opt-in)
+
+Set `AGENTCHAT_CHATGPT_RESUME_ON_TIMEOUT=1` in the recommended user-level file, `~/.agentchat/.env`, to enable ChatGPT-only no-resend recovery. The process environment still has higher precedence than `.env`. The setting is disabled by default and does not change Gemini, Claude, Kimi, or any other provider.
+
+After a ChatGPT prompt has been submitted, a visible stop-generation control is authoritative evidence that generation is still active. Once the control disappears, the assistant response must remain unchanged for the existing 10-second stability window before it is accepted as complete. The mere presence of an assistant DOM node at the deadline is never completion proof.
+
+The enabled mode permits one normal per-provider observation budget plus exactly one additional budget on the same `https://chatgpt.com/c/<conversation-id>` conversation. Parent subprocess watchdogs allow both budgets plus the existing shutdown grace. If the second budget expires, AgentChat stops fallback and exits `10` with this stderr contract while leaving stdout empty:
+
+```text
+[oneweb] AGENTCHAT_PENDING {"status":"submitted_pending","provider":"chatgpt","conversation_url":"https://chatgpt.com/c/...","safe_to_resend":false}
+```
+
+`safe_to_resend: false` is the quota-safety guarantee: the submission is committed, so callers must not retry it on ChatGPT or another provider. If a conversation URL cannot be captured, the field is omitted and the relevant browser tab is kept for manual recovery; the no-resend guarantee is unchanged.
+
+Resume an existing conversation read-only with:
+
+```bash
+node ~/.agents/skills/AgentChat-OneWeb/index.js \
+  --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" \
+  --timeout=300000
+```
+
+Resume mode opens that exact conversation in a dedicated page and never locates, fills, or submits the prompt editor. It prints the completed answer to stdout with exit `0`, or emits the same pending line with exit `10` if generation is still active. Non-HTTPS, non-ChatGPT, homepage, non-conversation, credential-bearing, query-bearing, or prompt-combined resume invocations fail as usage errors before browser navigation.
+
+Conversation URLs are transient recovery data. They may appear in the immediate pending result, but are never written to receipts, fallback telemetry, or a persistent pending registry.
+
 ---
 
 ## Fallback Chain (Priority Order)
@@ -374,6 +400,9 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
 # 上传图片并提问（可重复 --image-path 上传多张）
 node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=./photo.png "描述这张图片"
 node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=a.png --image-path=b.jpg "比较这两张图片"
+
+# Read an existing ChatGPT conversation without sending a prompt
+node ~/.agents/skills/AgentChat-OneWeb/index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" --timeout=300000
 ```
 
 ### CLI Flags
@@ -392,6 +421,7 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=a.png --image-path=
 | `--image` | 图片生成意图：index.js 进程内追加标准生图增强指令并记录 `image_prompt_enhanced` telemetry（见图片协议 §1） |
 | `--image-path=PATH` | 图片上传：读取本地图片文件，粘贴到 AI 聊天对话框后再发送 prompt（可重复使用多次以上传多张图片）。触发条件见图片上传协议 §4 |
 | `--no-download-images` | 禁用图片自动下载（默认启用，从响应中提取图片 URL 下载到当前工作目录） |
+| `--resume-chatgpt=URL` | Read-only ChatGPT recovery: open an existing validated `/c/<id>` conversation, never type or send, and return its completed answer or exit 10 pending |
 
 > 未识别的 `--flag` 会打 `WARN` 日志后忽略（v14 起；此前静默丢弃，是 `--locale` 空转数月、`--keep-tabs` 曾被拼进 prompt 这一类 bug 的根源）。`--from=` / `--only=` 空值会以 exit 64 硬失败。`--only`/`--single` 下 provider 名必须**精确匹配** key 或显示名（子串匹配仅在级联路径作为人类便利保留）。
 
@@ -429,7 +459,7 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=a.png --image-path=
 | 4 | `ERR_INTERNAL` | 内部错误 (Node 异常、CDP 断开等) |
 | 5 | `ERR_RATE_LIMITED` | 所有 provider 均被限流 |
 | 9 | `ERR_ALL_EXHAUSTED` | 遍历了全部 provider，全部不可用 |
-| 10 | `ERR_TIMEOUT` | 总超时，无完整响应 |
+| 10 | `ERR_TIMEOUT` | 总超时，或已提交的 opt-in ChatGPT 请求仍为 `submitted_pending`（不得重发） |
 | 64 | `EX_USAGE` | 用法错误（空 prompt / `--from=`、`--only=` 空值）。v14 前误用 exit 1，与 ERR_NO_CDP 冲突，会让编排方把调用方 bug 当成"浏览器挂了"终止整条链。用法错误同样产生 receipt |
 
 ---

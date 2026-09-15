@@ -81,6 +81,12 @@ const { callProvider, runChain, cleanResponse } = createExecutor({
 
 const executeWithFallback = runChain; // (chain, prompt, budgetMs)
 
+function resultExitCode(result) {
+    if (result.success) return 0;
+    if (result.pending) return 10;
+    return 2;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // SMOKE TEST
 // ═══════════════════════════════════════════════════════════════════
@@ -165,6 +171,7 @@ async function main() {
 
     log(`Mode: ${mode || "custom"} | Chain: ${chain.join(" → ")} | Budget: ${Math.round(timeout / 1000)}s`);
     const result = await executeWithFallback(chain, prompt, timeout);
+    const exitCode = resultExitCode(result);
 
     // Execution receipt — embedded INSIDE the output JSON (this file's stdout
     // contract is "one JSON object"; a trailing plain-text line would break
@@ -178,8 +185,9 @@ async function main() {
         runId: makeRunId(),
         fields: {
             mode: mode || "custom",
-            exit: result.success ? 0 : 2,
+            exit: exitCode,
             provider_used: result.provider_used,
+            ...(result.pending ? { outcome: 'submitted_pending', safe_to_resend: false } : {}),
             elapsed_ms: result.elapsed_ms,
         },
         stream: "stderr",
@@ -194,11 +202,11 @@ async function main() {
     // stdout at the pipe-buffer boundary; the JSON result (full response
     // embedded) can exceed it. All handles are closed here, so exitCode +
     // natural exit drains stdout fully. cleanupAllLocks still runs on "exit".
-    process.exitCode = result.success ? 0 : 2;
+    process.exitCode = exitCode;
 }
 
 if (require.main === module) {
     main().catch(e => { process.stderr.write(`[workflow] CRITICAL: ${e.message}\n`); process.exit(4); });
 }
 
-module.exports = { STEP_CHAINS, callProvider, cleanResponse };
+module.exports = { STEP_CHAINS, callProvider, cleanResponse, resultExitCode };

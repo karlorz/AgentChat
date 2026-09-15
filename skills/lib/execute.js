@@ -29,7 +29,16 @@
 const { spawn } = require("child_process");
 const { releaseLock, acquireProviderSlot, resolveMaxTabsPerProvider } = require("./locks");
 const { log: _log } = require("./terminal");
-const { PROVIDER_CHAIN, PROVIDER_NAMES_RE_SOURCE, DEEP_RESEARCH_TIMEOUT_MS, isDeepResearchActive } = require("./providers/chain");
+const chainModule = require("./providers/chain");
+const { PROVIDER_CHAIN } = chainModule;
+const PROVIDER_NAMES_RE_SOURCE = chainModule.PROVIDER_NAMES_RE_SOURCE
+    || PROVIDER_CHAIN.map(p => p.name || p.key).join('|');
+const DEEP_RESEARCH_TIMEOUT_MS = chainModule.DEEP_RESEARCH_TIMEOUT_MS || 1_800_000;
+const isDeepResearchActive = chainModule.isDeepResearchActive || ((provider) => {
+    const key = String(provider || '').toUpperCase().replace(/[^A-Z0-9]/g, '_');
+    return process.env.AGENTCHAT_DEEP_RESEARCH === '1'
+        || (key && process.env[`AGENTCHAT_${key}_DEEP_RESEARCH`] === '1');
+});
 
 // provider → operator-actionable recovery command (single source: chain.js).
 // Surfaced when a call fails with reason 'auth' so orchestrator logs and the
@@ -43,6 +52,14 @@ const RECOVERY_HINTS = Object.fromEntries(
 const PER_CALL_CAP_MS = 180_000;   // ceiling for a single provider attempt
 const MIN_CALL_BUDGET_MS = 30_000; // below this, an attempt can't succeed anyway
 const MAX_BUFFER = 1024 * 1024;    // 1MB stdout/stderr cap to prevent OOM
+
+function parseLastTaggedJson(text, prefix) {
+    const index = text.lastIndexOf(prefix);
+    if (index < 0) return null;
+    const lineEnd = text.indexOf('\n', index);
+    const payload = text.slice(index + prefix.length, lineEnd < 0 ? undefined : lineEnd).trim();
+    try { return JSON.parse(payload); } catch (_) { return null; }
+}
 
 // LOCKED-PROVIDER RETRY: when a provider is temporarily locked by another worker,
 // don't permanently skip it — retry with exponential backoff. The old behaviour
@@ -144,6 +161,13 @@ function effectiveCallTimeoutMs(provider, timeoutMs, callOpts = {}) {
     return base;
 }
 
+function effectiveProcessTimeoutMs(provider, logicalTimeoutMs, env = process.env) {
+    return String(provider || '').toLowerCase() === 'chatgpt'
+        && env.AGENTCHAT_CHATGPT_RESUME_ON_TIMEOUT === '1'
+        ? logicalTimeoutMs * 2
+        : logicalTimeoutMs;
+}
+
 // ── Factory ───────────────────────────────────────────────────────────────
 
 /**
@@ -183,6 +207,7 @@ function createExecutor({
     function callProvider(prompt, provider, timeoutMs, callOpts = {}) {
         // Clamp + DR-aware raise live in effectiveCallTimeoutMs (exported for tests).
         timeoutMs = effectiveCallTimeoutMs(provider, timeoutMs, callOpts);
+        const processTimeoutMs = effectiveProcessTimeoutMs(provider, timeoutMs);
 
         // EXIT-CODE CONFLATION GUARD: OneWeb exits 1 for BOTH a usage error
         // (empty prompt) and ERR_NO_CDP. An empty prompt spawned downstream would
@@ -228,11 +253,11 @@ function createExecutor({
             // (prevents zombie subprocesses if OneWeb's own timeout wedges).
             let settled = false;
             const sigtermTimer = setTimeout(() => {
-                if (!settled) { log(`SIGTERM → ${provider} (budget ${timeoutMs}ms + 30s grace elapsed)`); child.kill("SIGTERM"); }
-            }, timeoutMs + 30_000);
+                if (!settled) { log(`SIGTERM → ${provider} (watchdog ${processTimeoutMs}ms + 30s grace elapsed)`); child.kill("SIGTERM"); }
+            }, processTimeoutMs + 30_000);
             const sigkillTimer = setTimeout(() => {
                 if (!settled) { log(`SIGKILL → ${provider}`); child.kill("SIGKILL"); }
-            }, timeoutMs + 35_000);
+            }, processTimeoutMs + 35_000);
 
             child.on("close", (code, signal) => {
                 if (settled) return; // 'error' already resolved this promise
@@ -245,6 +270,8 @@ function createExecutor({
                 const providerUsed = used ? used[1].toLowerCase() : provider;
                 const usedWithChars = stderr.match(/✓\s*\w+:\s*USED\s*\(\d+\s*chars/);
 
+                const pending = parseLastTaggedJson(stderr, '[oneweb] AGENTCHAT_PENDING ');
+
                 // v23: STRUCTURED ERROR CHANNEL — OneWeb emits its per-provider
                 // failure map as `[oneweb] AGENTCHAT_ERR {json}` on stderr before
                 // any failure exit. Exit codes stay as the coarse fallback, but
@@ -252,14 +279,7 @@ function createExecutor({
                 // carried zero information about WHAT failed: selector miss, goto
                 // timeout, and auth wall were indistinguishable upstream). Parse
                 // the LAST such line; malformed JSON degrades to the exit code.
-                let detail = null;
-                {
-                    const lines = stderr.match(/\[oneweb\] AGENTCHAT_ERR (\{.*\})/g);
-                    if (lines) {
-                        const payload = lines[lines.length - 1].slice("[oneweb] AGENTCHAT_ERR ".length);
-                        try { detail = JSON.parse(payload); } catch (_) { /* fall back to exit code */ }
-                    }
-                }
+                const detail = parseLastTaggedJson(stderr, '[oneweb] AGENTCHAT_ERR ');
                 // Compact "reason@stage" for the provider this call intended (or
                 // the sole entry, which is the --single case): e.g.
                 // "error@editor_find", "timeout@wait_response", "auth@auth_check".
@@ -273,7 +293,16 @@ function createExecutor({
                     return r && r.reason ? (r.stage ? `${r.reason}@${r.stage}` : r.reason) : null;
                 })();
 
-                if (code === 0 && text.length >= 5) {
+                if (pending && pending.status === 'submitted_pending') {
+                    resolve({
+                        ok: false,
+                        pending: true,
+                        text: '',
+                        provider: pending.provider || provider,
+                        safe_to_resend: false,
+                        ...(pending.conversation_url ? { conversation_url: pending.conversation_url } : {}),
+                    });
+                } else if (code === 0 && text.length >= 5) {
                     resolve({ ok: true, text, provider: providerUsed });
                 } else if (code === 0 && acceptUsedMarker && usedWithChars && text.length < 5) {
                     // USED marker found but stdout was empty — the child's
@@ -383,6 +412,22 @@ function createExecutor({
             if (isDeepResearch) callOpts.deepResearch = true;
             const result = await callProvider(prompt, key, perCall, callOpts);
 
+            if (result.pending) {
+                releaseLock(slot.lockKey);
+                return {
+                    success: false,
+                    pending: true,
+                    provider: result.provider || key,
+                    provider_used: result.provider || key,
+                    primary_intended: chain[0],
+                    safe_to_resend: false,
+                    ...(result.conversation_url ? { conversation_url: result.conversation_url } : {}),
+                    response: null,
+                    response_length: 0,
+                    elapsed_ms: Date.now() - start,
+                };
+            }
+
             if (result.ok) {
                 if (!holdLockOnSuccess) releaseLock(slot.lockKey);
                 const actualProvider = result.provider || key;
@@ -441,4 +486,12 @@ function createExecutor({
     return { callProvider, runChain, cleanResponse };
 }
 
-module.exports = { createExecutor, cleanResponse, PER_CALL_CAP_MS, MIN_CALL_BUDGET_MS, EXIT_REASONS, _effectiveCallTimeoutMs: effectiveCallTimeoutMs };
+module.exports = {
+    createExecutor,
+    cleanResponse,
+    PER_CALL_CAP_MS,
+    MIN_CALL_BUDGET_MS,
+    EXIT_REASONS,
+    _effectiveCallTimeoutMs: effectiveCallTimeoutMs,
+    _effectiveProcessTimeoutMs: effectiveProcessTimeoutMs,
+};

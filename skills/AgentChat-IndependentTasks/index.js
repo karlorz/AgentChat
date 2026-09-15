@@ -414,7 +414,7 @@ function qualityGate(result, expectedQuestions = []) {
  * (two minCallBudget cycles) before returning ALL_EXHAUSTED — acceptable
  * compared to the previous L1 overhead (full re-dispatch + re-validation).
  */
-async function runOneWorker(node, budgetMs, skipList = [], prompt = node.prompt) {
+async function runOneWorker(node, budgetMs, skipList = [], prompt = node.prompt, executor = executeWithFallback) {
   const primaryKey = normalizeAI(node.ai);
   const questions = node.questions || [];
   // Only retry when there are questions to validate anchors against.
@@ -423,7 +423,16 @@ async function runOneWorker(node, budgetMs, skipList = [], prompt = node.prompt)
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      const result = await executeWithFallback(primaryKey, prompt, budgetMs, skipList);
+      const result = await executor(primaryKey, prompt, budgetMs, skipList);
+      if (result.pending) {
+        log(`  [${node.id}] ⏳ ${result.provider_used || primaryKey} submitted; response still pending (safe_to_resend=false)`);
+        return {
+          nodeId: node.id,
+          output: result,
+          quality: { passed: false, issues: ["PENDING"], quality_score: 0 },
+          node,
+        };
+      }
       const qr = qualityGate(result, questions);
       const anchorIssues = qr.issues.filter(i => i.startsWith("MISSING_ANCHOR:"));
 
@@ -676,7 +685,14 @@ function keyPhrases(text) {
 
 // ── Trust Tiers ──
 
+const TRUST_LABELS = { FULL: "✓", DEGRADED: "⚠", PENDING: "⏳", MISSING: "✗" };
+
 function assignTrust(node, result) {
+  if (result?.output?.pending) return {
+    tier: "PENDING",
+    provider: result.output.provider_used || result.output.provider || null,
+    reason: "submitted_pending",
+  };
   if (!result?.output?.response) return { tier: "MISSING", provider: result?.output?.provider_used || null, reason: result?.output?.error || "no response" };
   const deg = result.output.degradation;
   if (deg) return {
@@ -687,6 +703,15 @@ function assignTrust(node, result) {
   };
   const short = result.output.response.length < 50;
   return { tier: short ? "DEGRADED" : "FULL", provider: result.output.provider_used, reason: short ? "response too short" : null };
+}
+
+function pendingResultView(output) {
+  return {
+    status: "submitted_pending",
+    provider: output.provider_used || output.provider,
+    ...(output.conversation_url ? { conversation_url: output.conversation_url } : {}),
+    safe_to_resend: false,
+  };
 }
 
 // ── Check: Reviewer Alerts ──
@@ -819,7 +844,7 @@ function printStructuredOutput(dag, results, arb, totalMs) {
   lines.push("\nTRUST:");
   for (const node of nodes) {
     const t = arb.trust[node.id];
-    const label = { FULL: "✓", DEGRADED: "⚠", MISSING: "✗" }[t.tier] || "?";
+    const label = TRUST_LABELS[t.tier] || "?";
     const extras = t.tier === "DEGRADED" ? ` (${t.reason}${t.intended ? ", intended="+t.intended : ""})` : "";
     lines.push(`  ${label} ${node.id} [${node.role}]: ${t.tier} → ${t.provider || "NONE"}${extras}`);
   }
@@ -846,11 +871,13 @@ function printStructuredOutput(dag, results, arb, totalMs) {
 
   // Strategy
   const degraded = nodes.filter(n => arb.trust[n.id].tier === "DEGRADED");
+  const pending  = nodes.filter(n => arb.trust[n.id].tier === "PENDING");
   const missing  = nodes.filter(n => arb.trust[n.id].tier === "MISSING");
   const stratParts = [];
   if (arb.alerts.length > 0) stratParts.push(`${arb.alerts.length} 项审阅者质疑需核实`);
   if (arb.gaps.length > 0) stratParts.push(`${arb.gaps.length} 处综合报告缺口需补充`);
   if (degraded.length > 0) stratParts.push(`${degraded.length} 个角色降级，其输出交叉验证后使用`);
+  if (pending.length > 0) stratParts.push(`${pending.length} 个角色已提交且仍在生成，不得重发`);
   if (missing.length > 0) stratParts.push(`${missing.length} 个角色缺失，需自行补充该角度`);
   if (stratParts.length === 0) stratParts.push("所有角色无降级，综合报告完整，可直接引用");
   lines.push(`\nSTRATEGY: ${stratParts.join("；")}。`);
@@ -869,6 +896,9 @@ function printStructuredOutput(dag, results, arb, totalMs) {
     if (r?.output?.response) {
       console.log(`\n══════ ${node.id} (${node.role}) — ${r.output.provider_used} ══════`);
       console.log(r.output.response);
+    } else if (r?.output?.pending) {
+      console.log(`\n══════ ${node.id} (${node.role}) — PENDING ══════`);
+      console.log(JSON.stringify(pendingResultView(r.output)));
     }
   }
 }
@@ -1067,7 +1097,10 @@ async function main() {
   // Output
   const totalMs = Date.now() - T0;
   const failCount = Object.values(results).filter(r => !r?.output?.response).length;
-  const exitCode = failCount === dag.nodes.length ? 2 : 0;
+  const pendingNodes = Object.entries(results)
+    .filter(([, r]) => r?.output?.pending)
+    .map(([id, r]) => ({ id, ...pendingResultView(r.output) }));
+  const exitCode = pendingNodes.length > 0 ? 10 : (failCount === dag.nodes.length ? 2 : 0);
 
   // v25: --raw-out=FILE — write full detailed output to disk (replaces `| tee`)
   // Isolated in try/catch: a raw-out write failure must not kill the rest of
@@ -1081,7 +1114,7 @@ async function main() {
       rawLines.push("═".repeat(60));
       for (const node of dag.nodes) {
         const t = arbitration.trust[node.id];
-        const label = { FULL: "✓", DEGRADED: "⚠", MISSING: "✗" }[t.tier] || "?";
+        const label = TRUST_LABELS[t.tier] || "?";
         rawLines.push(`  ${label} ${node.id} [${node.role}]: ${t.tier} → ${t.provider || "NONE"}`);
       }
       for (const node of dag.nodes) {
@@ -1089,6 +1122,9 @@ async function main() {
         if (r?.output?.response) {
           rawLines.push(`\n══════ ${node.id} (${node.role}) — ${r.output.provider_used} ══════`);
           rawLines.push(r.output.response);
+        } else if (r?.output?.pending) {
+          rawLines.push(`\n══════ ${node.id} (${node.role}) — PENDING ══════`);
+          rawLines.push(JSON.stringify(pendingResultView(r.output)));
         }
       }
       // append receipt
@@ -1096,6 +1132,7 @@ async function main() {
         run_id: RUN_ID, skill: "AgentChat-IndependentTasks",
         timestamp: new Date().toISOString(), exit: exitCode,
         nodes: dag.nodes.length, failed: failCount,
+        pending_nodes: pendingNodes.map(n => n.id),
         providers_used: Object.fromEntries(
           Object.entries(results).map(([id, r]) => [id, r?.output?.provider_used || null])
         ), total_ms: totalMs,
@@ -1116,6 +1153,8 @@ async function main() {
       exit: exitCode,
       nodes: dag.nodes.length,
       failed: failCount,
+      pending_nodes: pendingNodes.map(n => n.id),
+      pending: pendingNodes,
       providers_used: Object.fromEntries(
         Object.entries(results).map(([id, r]) => [id, r?.output?.provider_used || null])
       ),
@@ -1149,6 +1188,7 @@ async function main() {
       exit: exitCode,
       nodes: dag.nodes.length,
       failed: failCount,
+      pending_nodes: pendingNodes.map(n => n.id),
       providers_used: Object.fromEntries(
         Object.entries(results).map(([id, r]) => [id, r?.output?.provider_used || null])
       ),
@@ -1177,4 +1217,4 @@ if (require.main === module) {
     main().catch(e => { log(`CRITICAL: ${e.message}`); process.exit(4); });
 }
 
-module.exports = { FALLBACK_CHAIN, buildFallbackChain, normalizeAI, cleanResponse, topoWaves, injectUpstream, tryParsePreDecomposedPlan, validateDAGNodes };
+module.exports = { FALLBACK_CHAIN, buildFallbackChain, normalizeAI, cleanResponse, topoWaves, injectUpstream, tryParsePreDecomposedPlan, validateDAGNodes, runOneWorker };

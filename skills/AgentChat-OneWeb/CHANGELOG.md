@@ -1,5 +1,13 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-09-15 — Opt-in quota-safe ChatGPT timeout recovery
+- **Incident reproduced**: a long ChatGPT response remained active at the local deadline, but the existing assistant DOM node was returned as a 214-character success. Later attempts opened additional ChatGPT conversations and consumed more usage instead of reading the already-submitted request.
+- **ChatGPT-only completion proof**: when `AGENTCHAT_CHATGPT_RESUME_ON_TIMEOUT=1`, a visible stop-generation control means active generation; after it disappears, response text must remain stable for the existing 10-second window. A partial DOM node at the deadline cannot satisfy success.
+- **Same-conversation recovery**: a proven submission receives exactly one additional per-provider observation budget on its validated `https://chatgpt.com/c/<id>` conversation. Context loss may reopen that exact URL within the same recovery clock; it never grants a third budget and never resubmits the prompt.
+- **Committed pending contract**: second-budget expiry emits `[oneweb] AGENTCHAT_PENDING`, exits 10, sets `safe_to_resend:false`, and stops OneWeb, shared-executor, WebSubAgent, and IndependentTasks fallback for the affected request. Completed IndependentTasks siblings are preserved.
+- **Read-only resume**: `--resume-chatgpt=<conversation-url>` observes an existing conversation without locating or operating the composer. Invalid or prompt-combined URLs fail before navigation.
+- **Privacy and compatibility**: pending URLs are immediate result data only and are excluded from receipts and telemetry. The feature is disabled by default; non-ChatGPT providers and legacy ChatGPT timeout behavior are unchanged.
+
 ## 2026-08-23 (v36) — Gemini 默认改为菜单感知的 newest full Flash（取代 v34 的 3.6 钉死）
 - **[P0] 菜单感知默认 Flash (`geminiModelSwitch.js`)**: 默认不再硬钉字面 **`3.6 Flash`**。`ensureFlash()` 在已验证的 Gemini 模型菜单中，于完整 Flash 候选项（`/\\bFlash\\b/i` 且不含 Lite/Pro/Ultra，且带前导版本号）里选取**版本号最新**的一项，再独立勾选 **延伸思考**。泛型 composer「Flash」、Flash-Lite、Pro、Ultra 一律拒绝。菜单里一个完整 Flash 都没有 → 与今日相同，返回 false / `ERR_MODEL_DEGRADED`
 - **[P0] zh_TW 不再因缺 3.6 误失败**: 实况菜单若已下架 3.6、只剩如 `2.5 Flash` + Lite/Pro/泛型 Flash，现会选中 `2.5 Flash` + 延伸思考，而不是因为找不到字面 3.6 就降级

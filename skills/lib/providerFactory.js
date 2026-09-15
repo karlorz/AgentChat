@@ -142,6 +142,36 @@ const DEFAULTS = {
     signedOutSelectors: [], // visible ⇒ signed-out landing page — fail fast as 'auth'
 };
 
+function chatGptResumeOnTimeoutEnabled(env = process.env) {
+    return env.AGENTCHAT_CHATGPT_RESUME_ON_TIMEOUT === '1';
+}
+
+function validateChatGptConversationUrl(raw) {
+    try {
+        const u = new URL(String(raw || '').trim());
+        if (u.origin !== 'https://chatgpt.com' || u.username || u.password || u.search) return null;
+        if (!/^\/c\/[^/?#]+\/?$/.test(u.pathname)) return null;
+        u.hash = '';
+        return u.toString().replace(/\/$/, '');
+    } catch (_) {
+        return null;
+    }
+}
+
+function submittedPendingResult(conversationUrl, page = null) {
+    const validUrl = validateChatGptConversationUrl(conversationUrl);
+    return {
+        success: false,
+        pending: true,
+        status: 'submitted_pending',
+        provider: 'chatgpt',
+        provider_used: 'chatgpt',
+        safe_to_resend: false,
+        ...(validUrl ? { conversation_url: validUrl } : {}),
+        ...(page ? { page } : {}),
+    };
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // SHARED ATOMIC OPERATIONS
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1063,7 +1093,11 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
         }
     }
 
-    if (!responseEl) return null;
+    if (!responseEl) {
+        if (!config.returnObservation) return null;
+        const stopVisible = await anyVisibleSelector(page, phase1Selectors);
+        return { status: 'pending', responseEl: null, stable: false, stopVisible };
+    }
 
     // Phase 3: stability polling
     const stillGeneratingCheck = config.stillGeneratingCheck || (async () => false);
@@ -1176,6 +1210,8 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
         }
     }
 
+    const stable = (Date.now() - lastChangeTime) >= stabilityWindow;
+
     // Phase 3.5 (v17): image render settle — generated images often lag behind
     // text DOM updates. Give the page a grace window after stability is declared
     // so collectResponseImages() can find <img> elements that just mounted.
@@ -1220,7 +1256,73 @@ async function waitForCompletion(page, config, startTime, timeoutMs) {
         }
     }
 
+    if (config.returnObservation) {
+        const stopVisible = await anyVisibleSelector(page, phase1Selectors);
+        return {
+            status: stable && !stopVisible ? 'complete' : 'pending',
+            responseEl,
+            stable,
+            stopVisible,
+        };
+    }
     return responseEl;
+}
+
+async function anyVisibleSelector(page, selectors) {
+    if (!page || (typeof page.isClosed === 'function' && page.isClosed())) return false;
+    const visible = await Promise.all((selectors || []).map(sel =>
+        page.locator(sel).first().isVisible().catch(() => false)
+    ));
+    return visible.some(Boolean);
+}
+
+function chatGptConversationUrlFromPage(page) {
+    try { return validateChatGptConversationUrl(page.url()); } catch (_) { return null; }
+}
+
+async function observeChatGptResponse(page, config, timeoutMs, options = {}) {
+    const C = { ...DEFAULTS, ...config };
+    const prompt = options.prompt || '';
+    const baselineCounts = options.baselineCounts || null;
+    const baselineText = options.baselineText || null;
+    const observation = await waitForCompletion(page, {
+        ...C,
+        baselineCounts,
+        baselineText,
+        promptForEcho: prompt,
+        returnObservation: true,
+    }, Date.now(), timeoutMs);
+
+    if (!observation || observation.status !== 'complete' || !observation.responseEl) {
+        return submittedPendingResult(chatGptConversationUrlFromPage(page), page);
+    }
+
+    const response = await extractResponse(page, observation.responseEl, C, prompt, baselineText);
+    if (!response) {
+        return submittedPendingResult(chatGptConversationUrlFromPage(page), page);
+    }
+    return { success: true, response, page };
+}
+
+async function resumeChatGptConversation(context, conversationUrl, config, timeoutMs, options = {}) {
+    const validUrl = validateChatGptConversationUrl(conversationUrl);
+    if (!validUrl) throw new Error('invalid ChatGPT conversation URL');
+    const C = { ...DEFAULTS, ...config };
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    const page = await context.newPage();
+    let remainingMs = Math.max(0, deadline - Date.now());
+    if (remainingMs <= 0) return submittedPendingResult(validUrl, page);
+    await page.goto(validUrl, {
+        waitUntil: C.navWaitUntil,
+        timeout: Math.min(C.navTimeout, remainingMs),
+    });
+    remainingMs = Math.max(0, deadline - Date.now());
+    if (C.navPostDelay > 0 && remainingMs > 0) {
+        await page.waitForTimeout(Math.min(C.navPostDelay, remainingMs));
+    }
+    remainingMs = Math.max(0, deadline - Date.now());
+    if (remainingMs <= 0) return submittedPendingResult(validUrl, page);
+    return observeChatGptResponse(page, config, remainingMs, options);
 }
 
 /**
@@ -2168,7 +2270,69 @@ function createProviderRunner(cfg) {
         // Shallow per-run copy: C is shared across invocations of this runner,
         // so per-run state (baselineCounts) must never be written onto it.
         // v19: promptForEcho powers the stale-answer guard (see waitForCompletion)
-        const responseEl = await waitForCompletion(page, { ...C, baselineCounts, baselineText, promptForEcho: prompt }, provStart, timeoutMs);
+        const resumeOnTimeout = C.key === 'chatgpt' && chatGptResumeOnTimeoutEnabled();
+        let submittedConversationUrl = null;
+        let submittedContext = null;
+        if (resumeOnTimeout) {
+            try { submittedConversationUrl = validateChatGptConversationUrl(page.url()); } catch (_) {}
+            try { submittedContext = page.context(); } catch (_) {}
+        }
+
+        let responseObservation;
+        let observationError = null;
+        try {
+            responseObservation = await waitForCompletion(page, {
+                ...C,
+                baselineCounts,
+                baselineText,
+                promptForEcho: prompt,
+                returnObservation: resumeOnTimeout,
+            }, provStart, timeoutMs);
+        } catch (e) {
+            if (!resumeOnTimeout) throw e;
+            observationError = e;
+            responseObservation = { status: 'pending', responseEl: null };
+        }
+        const responseEl = resumeOnTimeout
+            ? responseObservation && responseObservation.responseEl
+            : responseObservation;
+
+        if (resumeOnTimeout && (!responseObservation || responseObservation.status !== 'complete')) {
+            let conversationUrl = submittedConversationUrl;
+            let browserContext = submittedContext;
+            try { conversationUrl = validateChatGptConversationUrl(page.url()) || conversationUrl; } catch (_) {}
+            try { browserContext = page.context() || browserContext; } catch (_) {}
+
+            let recovered;
+            const recoveryStart = Date.now();
+            try {
+                if (observationError && isContextLostError(observationError)) throw observationError;
+                recovered = await observeChatGptResponse(page, C, timeoutMs, {
+                    prompt, baselineCounts, baselineText,
+                });
+            } catch (e) {
+                const remainingRecoveryMs = Math.max(0, timeoutMs - (Date.now() - recoveryStart));
+                if (remainingRecoveryMs > 0 && conversationUrl && browserContext && isContextLostError(e)) {
+                    recovered = await resumeChatGptConversation(
+                        browserContext, conversationUrl, C, remainingRecoveryMs,
+                        { prompt, baselineCounts, baselineText }
+                    ).catch(() => null);
+                } else {
+                    recovered = null;
+                }
+            }
+
+            if (recovered && recovered.success) {
+                if (ctx && ctx.telemetry) {
+                    ctx.telemetry.per_provider_ms[C.key] = Date.now() - provStart;
+                }
+                return { success: true, response: recovered.response, page: recovered.page || page };
+            }
+            return submittedPendingResult(
+                (recovered && recovered.conversation_url) || conversationUrl,
+                (recovered && recovered.page) || page
+            );
+        }
         if (!responseEl) {
             // v17: a wall can also mount MID-WAIT (post-send throttle, session
             // expiry during generation). Probe once before classifying, so the
@@ -2248,6 +2412,11 @@ module.exports = {
     clearEditor,
     clickSend,
     waitForCompletion,
+    chatGptResumeOnTimeoutEnabled,
+    validateChatGptConversationUrl,
+    submittedPendingResult,
+    observeChatGptResponse,
+    resumeChatGptConversation,
     extractResponse,
     // Shared response-length gate (also used by gemini.js's validator).
     effectiveMinResponseLength,
