@@ -57,7 +57,28 @@ const WEBEXT = path.resolve(__dirname, "..", "AgentChat-OneWeb", "index.js");
 // Previously this required OneWeb's index.js just to read a constant,
 // dragging in playwright-core + all 8 adapter modules at orchestrator startup.
 const { PROVIDER_CHAIN, PROVIDER_KEYS } = require('../lib/providers/chain');
-const FALLBACK_CHAIN = PROVIDER_KEYS;
+
+function resolveProviderKeys(keys) {
+    if (!Array.isArray(keys) || keys.length === 0) {
+        const err = new Error(
+            'PROVIDER_KEYS missing from skills/lib/providers/chain.js. Refresh ~/.agents/skills from the AgentChat repo skills/ tree (copy sibling lib/ with IndependentTasks; keep data/, node_modules/, receipts).'
+        );
+        err.code = 'ERR_PROVIDER_KEYS';
+        throw err;
+    }
+    return keys;
+}
+
+let FALLBACK_CHAIN;
+try {
+    FALLBACK_CHAIN = resolveProviderKeys(PROVIDER_KEYS);
+} catch (e) {
+    if (require.main === module) {
+        process.stderr.write(`[orch] CRITICAL: ${e.message}\n`);
+        process.exit(4);
+    }
+    throw e;
+}
 
 // Single alias map for normalizeAI and the strict exclude parser: canonical
 // keys pass through (identity), plus real aliases (gpt → chatgpt).
@@ -1217,4 +1238,4 @@ if (require.main === module) {
     main().catch(e => { log(`CRITICAL: ${e.message}`); process.exit(4); });
 }
 
-module.exports = { FALLBACK_CHAIN, buildFallbackChain, normalizeAI, cleanResponse, topoWaves, injectUpstream, tryParsePreDecomposedPlan, validateDAGNodes, runOneWorker };
+module.exports = { FALLBACK_CHAIN, buildFallbackChain, normalizeAI, cleanResponse, topoWaves, injectUpstream, tryParsePreDecomposedPlan, validateDAGNodes, runOneWorker, resolveProviderKeys };

@@ -359,6 +359,11 @@ curl -s http://127.0.0.1:9222/json/version | python3 -c "import json,sys; print(
 #    ⚠️ 本 skill 依赖同级 skills/lib/ 共享库（require('../lib/…')）——
 #    安装到 ~/.agents/skills/ 时必须整棵拷贝：AgentChat-OneWeb/ 与 lib/ 并排。
 #    只拷 AgentChat-OneWeb/ 会在启动时报出带修复指引的 FATAL（v14 起，不再是裸 MODULE_NOT_FOUND）。
+#    IndependentTasks 同样需要 sibling `lib/providers/chain.js` that exports
+#    PROVIDER_KEYS. A stale copy that only has PROVIDER_CHAIN fails loud
+#    (`ERR_PROVIDER_KEYS`, refresh hint) instead of `includes` on undefined.
+#    After tests, refresh ~/.agents/skills runtime files without replacing
+#    data/, node_modules/, receipts, or user .env.
 
 # 4. 至少一个 AI service 已登录 (Chrome profile 中)
 #    各 service 登录 URL:

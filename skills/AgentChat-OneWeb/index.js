@@ -948,6 +948,7 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
         ctx.telemetry.providers_tried = triedProviders;
         ctx.telemetry.fallback_reasons = fallbackReasons;
         ctx.telemetry.total_ms = Date.now() - overallStart;
+        ctx.telemetry.response_length_chars = result.response ? result.response.length : 0;
 
         log(`\n✓ ${provider.name}: USED (${result.response.length} chars, ${ctx.telemetry.total_ms}ms total)`);
         if (triedProviders.length > 1) {

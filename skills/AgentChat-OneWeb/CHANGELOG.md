@@ -1,5 +1,11 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-09-15 — IndependentTasks PROVIDER_KEYS fail-loud + success telemetry length
+- **[P0] IndependentTasks stale-install crash**: a `~/.agents/skills` copy of `lib/providers/chain.js` that exported only `PROVIDER_CHAIN` made `FALLBACK_CHAIN` undefined, then `FALLBACK_CHAIN.filter` threw `Cannot read properties of undefined (reading 'includes')` before send. IndependentTasks now `resolveProviderKeys()` at load: missing/empty keys throw `ERR_PROVIDER_KEYS` with a refresh hint (CLI exits 4). Keys are never silently derived from `PROVIDER_CHAIN`.
+- **[P1] Success telemetry length**: `tryAllProviders` now sets `ctx.telemetry.response_length_chars` from the returned response on the normal success path (previously only the ChatGPT resume path wrote it; live Gemini shorts recorded 0 while stdout had the reply).
+- **[test]** `test_provider_keys.js`, `test_oneweb_telemetry_length.js`
+- **Install refresh**: copy changed runtime files into `~/.agents/skills` without replacing `data/`, `node_modules/`, receipts, or user `.env`. Include `lib/providers/chain.js` (`PROVIDER_KEYS` export) and IndependentTasks `index.js`.
+
 ## 2026-09-15 — Opt-in quota-safe ChatGPT timeout recovery
 - **Incident reproduced**: a long ChatGPT response remained active at the local deadline, but the existing assistant DOM node was returned as a 214-character success. Later attempts opened additional ChatGPT conversations and consumed more usage instead of reading the already-submitted request.
 - **ChatGPT-only completion proof**: when `AGENTCHAT_CHATGPT_RESUME_ON_TIMEOUT=1`, a visible stop-generation control means active generation; after it disappears, response text must remain stable for the existing 10-second window. A partial DOM node at the deadline cannot satisfy success.
