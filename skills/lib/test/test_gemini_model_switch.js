@@ -26,6 +26,7 @@ const {
     isExtendedThinkingText,
     isDefaultFlashExtendedMenuState,
     isProExtendedAria,
+    inferLocaleFromAria,
     locales,
     _cache,
 } = require('../geminiModelSwitch');
@@ -193,6 +194,10 @@ assert('current zh-TW model selector is matched', locales.modelBtnCSS(), 'button
 assert('fuzzy selector accepts old and current zh-TW wording', locales.FUZZY.modelAria.test('開模式選擇器，目前係 Flash 延伸思考'));
 assert('shared locale helper recognizes the current zh-TW aria', locales.inferLocaleFromButtonText('開模式選擇器，目前係 Flash 延伸思考'), 'zh_TW');
 assert('shared locale helper keeps Flash Extended out of Pro identity', isProExtendedAria('開模式選擇器，目前係 Flash 延伸思考'), false);
+assert('legacy English model selector remains recognized', locales.inferLocaleFromButtonText('Model selector'), 'en');
+assert('current English mode picker wording is recognized', locales.inferLocaleFromButtonText('Open mode picker, currently Flash'), 'en');
+assert('model switch correction recognizes current English wording', inferLocaleFromAria('Open mode picker, currently Pro Extended'), 'en');
+assert('English discovery selector is case-insensitive', locales.MODEL_BUTTON_DISCOVERY_SELECTOR.includes('aria-label*="mode picker" i'));
 locales.setLocale(null);
 
 console.log('\nT6: legacy selector cache cannot poison default selection');
@@ -200,6 +205,9 @@ const oldStateDir = process.env.AGENTCHAT_STATE_DIR;
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const modelSwitchSource = fs.readFileSync(path.join(__dirname, '..', 'geminiModelSwitch.js'), 'utf8');
+assert('active menu path removed the self-excluding English predicate', !modelSwitchSource.includes('extRe.test(t) && !thinkRe.test(t)'));
+assert('active menu path retains an explicit Extended identity guard', modelSwitchSource.includes('thinkRe.test(t) && !/extend|扩展|延伸|延長|拡張/i.test(t)'));
 const tempStateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentchat-gemini-cache-'));
 try {
     process.env.AGENTCHAT_STATE_DIR = tempStateDir;

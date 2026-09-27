@@ -144,10 +144,17 @@ function inferLocaleFromButtonText(text) {
     // v32: 2026-08 zh-TW 按钮改名 "開啟模式挑選器" → "開模式選擇器，目前係 <model>"
     if (/開啟|開模式|選擇器|挑選|選取|目前係|目前為|延長|延伸/.test(text)) return 'zh_TW';
     if (/打开|选择器|选择|扩展|目前为/.test(text)) return 'zh_CN';
-    if (/Model selector|Extended/.test(text)) return 'en';
+    if (/Model selector|Extended|mode picker|currently/i.test(text)) return 'en';
     if (/モデル|拡張/.test(text)) return 'ja';
     return null;
 }
+
+const MODEL_BUTTON_DISCOVERY_SELECTOR = [
+    'button[aria-label*="模式"]',
+    'button[aria-label*="model" i]',
+    'button[aria-label*="mode picker" i]',
+    'button[aria-label*="モデル"]',
+].join(', ');
 
 /**
  * 从 Gemini 页面自动检测 UI locale。
@@ -159,13 +166,11 @@ async function detectLocale(page) {
         // 按钮文本是 Gemini UI 实际语言的权威来源。navigator.language 可能与页面 UI
         // 不一致（如浏览器设置为 zh-CN 但 Gemini 页面是 zh-TW），此时以按钮文本为准
         // ——否则所有菜单项匹配（thinking/extended/proDesc）都会因 locale 错配而失败。
-        const btnText = await page.evaluate(() => {
-            const el = document.querySelector(
-                'button[aria-label*="模式"], button[aria-label*="Model"], button[aria-label*="モデル"]'
-            );
+        const btnText = await page.evaluate((selector) => {
+            const el = document.querySelector(selector);
             if (!el) return '';
             return (el.getAttribute('aria-label') || '') + ' ' + (el.textContent || '');
-        });
+        }, MODEL_BUTTON_DISCOVERY_SELECTOR);
 
         const btnLocale = inferLocaleFromButtonText(btnText);
 
@@ -253,6 +258,7 @@ module.exports = {
     PROFILES,
     FUZZY,
     STATIC,
+    MODEL_BUTTON_DISCOVERY_SELECTOR,
     inferLocaleFromButtonText,
     detectLocale,
     setLocale,
