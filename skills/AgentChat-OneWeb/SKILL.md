@@ -475,7 +475,7 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --resume-chatgpt="https://chatgp
 index.js
 ├── main()                    — CLI 入口，解析参数
 ├── tryAllProviders()         — 按链遍历 provider，返回第一个成功
-├── RUNNERS (factory-built)   — 9 provider runners via createProviderRunner()
+├── RUNNERS (factory-built)   — provider runners via createProviderRunner()
 │   ├── gemini                — config: lib/providers/adapters/gemini.js
 │   ├── chatgpt               — config: lib/providers/adapters/chatgpt.js
 │   ├── claude                — config: lib/providers/adapters/claude.js
@@ -484,7 +484,8 @@ index.js
 │   ├── minimax               — config: lib/providers/adapters/minimax.js
 │   ├── doubao                — config: lib/providers/adapters/doubao.js
 │   ├── mimo                  — config: lib/providers/adapters/mimo.js
-│   └── deepseek              — config: lib/providers/adapters/deepseek.js
+│   ├── deepseek              — config: lib/providers/adapters/deepseek.js
+│   └── muse                  — config: lib/providers/adapters/muse.js (draft/best-effort)
 ├── helpers/
 │   ├── isProviderTabOpen()   — tab dedup (shared with smokeTest)
 │   ├── log() / startTimer()  — 终端输出 (lib/terminal.js)
@@ -520,17 +521,18 @@ index.js
 | **Doubao** | 字节跳动 React SPA、CSS Modules 哈希类名、agentic 工具/搜索阶段 stillWorkingCheck | `adapters/doubao.js` |
 | **MiMo** | React SPA 4s 延迟、DOM 遍历定位发送按钮 (无可靠 CSS selector) | `adapters/mimo.js` |
 | **DeepSeek** | 标准管线、ds-markdown 响应 | `adapters/deepseek.js` |
+| **Muse** | Draft/best-effort 选择器；链末位；live CDP prove 待 Karl 重开 social/browser | `adapters/muse.js` |
 
 ---
 
 ## Adding a New Provider
 
-1. 创建 `lib/providers/adapters/<name>.js` 导出 config 对象（参考现有 adapter）
-2. 在 `PROVIDER_CHAIN` 数组中添加 entry
-3. 在 `PROVIDER_KEYS` 数组中添加 key（自动注册到 RUNNERS）
-4. Config 的关键字段: `url`, `authDomains`, `editorSelectors`, `sendSelectors`/`sendFallback`, `responseSelectors`
-5. 函数返回 `{success: true, response: string}` 或 `{success: false, reason: string}`
+1. 创建 `lib/providers/adapters/<name>.js` 导出 config 对象（参考现有 adapter；Muse 等 draft adapter 优先 durable generics）
+2. 在 `PROVIDER_CHAIN` 数组中添加 entry（`PROVIDER_KEYS` 由 chain 派生，自动注册到 RUNNERS）
+3. Config 的关键字段: `url`, `authDomains`, `editorSelectors`, `sendSelectors`/`sendFallback`, `responseSelectors`
+4. 函数返回 `{success: true, response: string}` 或 `{success: false, reason: string}`
    - `reason` 必须是: `"quota"` | `"auth"` | `"error"` | `"timeout"`
+5. 更新 demo hub / `webextended.html` provider 列表与 product-map 测试中硬编码的数量文案
 
 ---
 

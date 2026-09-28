@@ -49,6 +49,7 @@ if (productMap) {
     ok(/WebSubAgent/.test(skillNames), 'skills list names WebSubAgent');
     ok(/agentweb-setup/.test(skillNames), 'skills list names agentweb-setup');
     ok(/AgentChat-Muse/.test(skillNames), 'skills list names AgentChat-Muse');
+    ok(map.providers.some(p => p.key === 'muse'), 'productMap includes muse provider');
     ok(!/WebExtended/.test(skillNames) && !/FreeSubAgent/.test(skillNames),
         'skills list does not use retired names');
 }
