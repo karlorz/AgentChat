@@ -920,7 +920,12 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
             const thinkRe = new RegExp(thinkSrc, thinkFlags);
             for (let i = 0; i < items.length; i++) {
                 const t = items[i].innerText || '';
-                if (extRe.test(t) && !thinkRe.test(t) && items[i].offsetParent !== null) return i;
+                if (!extRe.test(t) || items[i].offsetParent === null) continue;
+                // English uses "Extended thinking", which also matches the
+                // generic "Thinking" parent pattern. Reject only a thinking
+                // row that does not itself identify an extended mode.
+                if (thinkRe.test(t) && !/extend|扩展|延伸|延長|拡張/i.test(t)) continue;
+                return i;
             }
             return -1;
         }, { itemSel: L.STATIC.menuItem, extSrc: _extRe.source, extFlags: _extRe.flags, thinkSrc: _thinkRe.source, thinkFlags: _thinkRe.flags });

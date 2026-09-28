@@ -1,5 +1,10 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-09-28 — Restore Gemini English Pro Extended menu parity
+- **[P0] Current English locale detection**: recognize Gemini's `Open mode picker, currently ...` aria-label and discover it with case-insensitive model-button selectors. The visible model control remains authoritative when browser and page language differ.
+- **[P0] Extended-thinking selection**: allow the English `Extended thinking` row even though it also matches the generic `Thinking` pattern; generic parent rows remain excluded. This restores the focused behavior from upstream PR #14 without merging unrelated old `dev` changes.
+- **[test]** Expand `test_gemini_model_switch.js` with legacy/current English locale labels, cross-locale Extended-row contracts, and a source assertion against the old self-excluding predicate.
+
 ## 2026-09-15 — IndependentTasks PROVIDER_KEYS fail-loud + success telemetry length
 - **[P0] IndependentTasks stale-install crash**: a `~/.agents/skills` copy of `lib/providers/chain.js` that exported only `PROVIDER_CHAIN` made `FALLBACK_CHAIN` undefined, then `FALLBACK_CHAIN.filter` threw `Cannot read properties of undefined (reading 'includes')` before send. IndependentTasks now `resolveProviderKeys()` at load: missing/empty keys throw `ERR_PROVIDER_KEYS` with a refresh hint (CLI exits 4). Keys are never silently derived from `PROVIDER_CHAIN`.
 - **[P1] Success telemetry length**: `tryAllProviders` now sets `ctx.telemetry.response_length_chars` from the returned response on the normal success path (previously only the ChatGPT resume path wrote it; live Gemini shorts recorded 0 while stdout had the reply).
