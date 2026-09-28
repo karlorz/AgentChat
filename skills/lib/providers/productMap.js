@@ -12,6 +12,7 @@ const HUB_SKILLS = [
     { key: 'independent', name: 'AgentChat-IndependentTasks', href: 'freesubagent.html', kind: 'skill' },
     { key: 'websubagent', name: 'AgentChat-WebSubAgent', href: 'workflow.html', kind: 'skill' },
     { key: 'setup', name: 'agentweb-setup', href: 'setup.html', kind: 'skill' },
+    { key: 'muse', name: 'AgentChat-Muse', href: 'muse.html', kind: 'skill' },
     { key: 'mcp', name: 'MCP Server', href: 'mcp.html', kind: 'tool' },
     { key: 'python', name: 'Python SDK', href: 'python.html', kind: 'sdk' },
     { key: 'locales', name: 'locales', href: 'locales.html', kind: 'lib' },

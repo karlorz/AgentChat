@@ -48,6 +48,7 @@ if (productMap) {
     ok(/IndependentTasks/.test(skillNames), 'skills list names IndependentTasks');
     ok(/WebSubAgent/.test(skillNames), 'skills list names WebSubAgent');
     ok(/agentweb-setup/.test(skillNames), 'skills list names agentweb-setup');
+    ok(/AgentChat-Muse/.test(skillNames), 'skills list names AgentChat-Muse');
     ok(!/WebExtended/.test(skillNames) && !/FreeSubAgent/.test(skillNames),
         'skills list does not use retired names');
 }
@@ -58,6 +59,7 @@ ok(indexHtml.includes('AgentChat-OneWeb'), 'hub names AgentChat-OneWeb');
 ok(indexHtml.includes('AgentChat-IndependentTasks'), 'hub names IndependentTasks');
 ok(indexHtml.includes('AgentChat-WebSubAgent'), 'hub names WebSubAgent');
 ok(indexHtml.includes('agentweb-setup'), 'hub has agentweb-setup card');
+ok(indexHtml.includes('AgentChat-Muse'), 'hub has AgentChat-Muse card');
 ok(!indexHtml.includes('AgentChat-WebExtended'), 'hub does not say WebExtended');
 ok(!indexHtml.includes('AgentChat-FreeSubAgent'), 'hub does not say FreeSubAgent');
 ok(!/>8<\/div><div class="lbl">AI Providers/.test(indexHtml), 'hub does not claim 8 providers');
