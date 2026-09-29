@@ -29,16 +29,12 @@ try {
 } catch (_) { /* stay silent */ }
 
 const RESPONSE_SELECTORS = [
-    // Best: assistant bubble container with a11y label
-    'div.flex.flex-col.gap-2:has(span.sr-only.whitespace-pre-wrap):has-text("Assistant message")',
-    // Direct a11y label (textContent has the full reply; innerText may be empty)
+    // Direct a11y label first — durable under streaming; postResponseHook strips prefix.
+    // Avoid nesting :has()+:has-text() on the parent (Playwright .last() can detach mid-extract).
     'span.sr-only.whitespace-pre-wrap:has-text("Assistant message")',
-    // Broader bubble match
     'div.flex.flex-col.gap-2:has(> span.sr-only.whitespace-pre-wrap)',
     '[data-testid*="assistant" i]',
     '[aria-label*="Assistant message" i]',
-    '[class*="assistant"] [class*="prose"]',
-    '[class*="assistant"] [class*="markdown"]',
     '[class*="message-content"]',
     '[role="article"]',
 ];
