@@ -3,7 +3,7 @@
  *
  * Extracted from AgentChat-OneWeb/index.js so that consumers that only
  * need the chain (e.g. IndependentTasks's buildFallbackChain) don't have to load
- * playwright-core + all 11 adapters just to read a constant array.
+ * playwright-core + all provider adapters just to read a constant array.
  *
  * OneWeb re-exports this for backward compatibility.
  */
@@ -23,6 +23,11 @@ const PROVIDER_CHAIN = [
     { key: 'doubao',   name: 'Doubao',   url: 'https://www.doubao.com/chat/',        authDomains: ['doubao.com/login', 'www.doubao.com/login'] },
     { key: 'mimo',     name: 'MiMo',     url: 'https://aistudio.xiaomimimo.com/',   authDomains: ['aistudio.xiaomimimo.com/login', 'auth0.com'] },
     { key: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/',         authDomains: ['chat.deepseek.com/login', 'deepseek.com/login'] },
+    // Muse is draft/unproven relative to the rest — keep near end so OneWeb
+    // only falls through here after stronger adapters. Live CDP prove is out
+    // of scope until Karl reopens social/browser work; adapter exists so
+    // OneWeb/agentweb-setup can classify/open the Muse tab.
+    { key: 'muse',     name: 'Muse',     url: 'https://muse.ai/',                  authDomains: ['muse.ai/login', 'accounts.muse.ai', 'muse.ai/signin'] },
 ];
 
 /** Provider keys in chain order — derive lists from this instead of re-typing. */

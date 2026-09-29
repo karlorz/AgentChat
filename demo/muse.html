@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AgentChat-Muse</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <a class="back" href="index.html">← Hub</a>
+  <h1>AgentChat-Muse</h1>
+  <p><strong>Muse.ai</strong> is on the OneWeb <code>PROVIDER_CHAIN</code> (key <code>muse</code>, near end) via <code>adapters/muse.js</code>, and this skill is the operator / subagent layer on top — chat, research, and secondary social ops.</p>
+  <p><strong>Draft-only live posture:</strong> selectors are best-effort; live CDP prove is out of scope tonight. Never auto-post; never touch primary @karldigi X; ask Karl before SMS.</p>
+  <ul>
+    <li>Provider adapter: classify/open Muse tab via OneWeb / agentweb-setup</li>
+    <li>Worker modes: <code>--prompt-template</code> · <code>--handoff</code> · <code>--worker-plan</code></li>
+    <li>Ops checklist: OTP discipline, Continue anti-bot handoff, TikTok App path, LinkedIn parked</li>
+    <li>Stop on Karl STOP — no thrash loops</li>
+  </ul>
+  <pre>node skills/AgentChat-Muse/index.js --ops-checklist
+node skills/AgentChat-Muse/index.js --worker-plan
+node skills/AgentChat-Muse/index.js --prompt-template
+node skills/AgentChat-Muse/index.js --handoff
+node skills/AgentChat-Muse/index.js --smoke
+node skills/AgentChat-Muse/index.js --doctor</pre>
+  <p>See <code>skills/AgentChat-Muse/SKILL.md</code>. Secrets stay in local mode-600 packs — never commit. <code>:8737</code> / Coolify stay off.</p>
+</body>
+</html>

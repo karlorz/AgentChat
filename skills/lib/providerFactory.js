@@ -1816,8 +1816,16 @@ async function checkOverlays(page, C) {
         // 退出登录 (logout) and marketing copy contains 免登录/已登录, all of
         // which hard-blocked a perfectly signed-in provider as 'auth'.
         // \b around log in / sign in similarly stops "Blogindex"-style hits.
+        // v12 (Muse): EDITOR VETO — if a usable chat editor is already visible,
+        // login-ish overlay text is furniture / invite chrome, not a wall.
+        // Same defence as pageHealth.detectChallenge textual gate.
         if (/(?:\blog\s*in\b|\bsign\s*in\b|(?<!退出|已|免)登\s*录|请先登录|Continue with Google)/i.test(text)) {
-            return { block: 'auth', detail: text.slice(0, 120) };
+            const editorVisible = await page.locator(
+                'textarea:not([readonly]):not([disabled]), [contenteditable="true"]:not([aria-disabled="true"]), [role="textbox"]'
+            ).first().isVisible({ timeout: 400 }).catch(() => false);
+            if (!editorVisible) {
+                return { block: 'auth', detail: text.slice(0, 120) };
+            }
         }
 
         // Soft block: try to dismiss. Known-dismissable overlays (matched against
@@ -1894,12 +1902,29 @@ function createProviderRunner(cfg) {
         const images = opts.images || [];
 
         // ── Step 1: Navigate ──
+        // v12: when reusing an existing provider tab that is ALREADY on the
+        // target origin, skip page.goto. Muse (and other SPAs) can sit on a
+        // healthy chat URL whose next hard navigation never reaches
+        // domcontentloaded within navTimeout — burning the whole provider.
         try {
-            await page.goto(C.url, {
-                waitUntil: C.navWaitUntil,
-                timeout: C.navTimeout,
-            });
+            let alreadyOn = false;
+            try {
+                const cur = page.url();
+                const target = new URL(C.url);
+                const here = new URL(cur);
+                alreadyOn = here.origin === target.origin
+                    && (here.pathname === target.pathname
+                        || here.pathname.startsWith(target.pathname.replace(/\/?$/, ''))
+                        || target.hostname.replace(/^www\./, '') === here.hostname.replace(/^www\./, ''));
+            } catch (_) { alreadyOn = false; }
+            if (!alreadyOn) {
+                await page.goto(C.url, {
+                    waitUntil: C.navWaitUntil,
+                    timeout: C.navTimeout,
+                });
+            }
             // SPA render wait — some providers need extra time for React/Angular to mount
+            // (also applied on reuse so a just-focused tab can finish hydrating).
             if (C.navPostDelay > 0) {
                 await page.waitForTimeout(C.navPostDelay);
             }

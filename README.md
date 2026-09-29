@@ -25,6 +25,7 @@
 | **AgentChat-IndependentTasks** | 并行编排 | 一次性触发8个ai。默认触发4个，可根据任务数量指定，如16个独立任务让8个Web 端分别执行两个任务 |大量高独立性任务|
 | **AgentChat-WebSubAgent** | 串行管道 | 核心Skill（架构图如下），6 步 AI 管道：你的Agent规划→Kimi 搜索→Gemini 推理→Agent 合成→ChatGPT或Claude 审查 | 深度推理 + 质量审查 |
 | **agentweb-setup** | 登录态检测 | 挂到已运行 Chrome，分类每个 provider 会话，引导登录未就绪项（Doubao 区域门 / Claude org-disabled） | `/agentweb-setup` |
+| **AgentChat-Muse** | Muse.ai LLM/agent worker + provider | OneWeb `muse` adapter（链末）+ 子代理层：chat/research/次账号 ops；OTP 纪律、Continue 反爬、TikTok App path；draft-only | `/AgentChat-Muse` |
 
 ---
 

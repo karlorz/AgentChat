@@ -198,7 +198,7 @@ class InvocationContext {
 // ══════════════════════════════════════════════════════════════════════════════
 
 // Single source of truth: lib/providers/chain.js (also consumed by IndependentTasks,
-// which must NOT require this file — that would load playwright-core + 11 adapters).
+// which must NOT require this file — that would load playwright-core + all provider adapters).
 const chainModule = require('../lib/providers/chain');
 const { PROVIDER_CHAIN, DEEP_RESEARCH_TIMEOUT_MS } = chainModule;
 const PROVIDER_KEYS = chainModule.PROVIDER_KEYS || PROVIDER_CHAIN.map(p => p.key);
