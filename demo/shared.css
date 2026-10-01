@@ -58,6 +58,8 @@ pre{background:var(--card);border:1px solid var(--border);border-radius:8px;padd
 
 .table-wrap{overflow-x:auto;margin:16px 0}
 table{width:100%;border-collapse:collapse;font-size:13px}
+.gfm-table{width:auto;max-width:100%;margin:8px 0;border:1px solid var(--border)}
+.gfm-table th,.gfm-table td{border:1px solid var(--border)}
 th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)}
 th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase}
 td code{background:transparent;border:none;padding:0}
