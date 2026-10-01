@@ -258,6 +258,8 @@ bash scripts/chrome-debug --dry-run --json     # 打印解析后的配置与来�
 
 配置优先级：`CHROME_PROFILE` > `CHROME_DEBUG_PROFILE`（兼容别名）；`CDP_PORT` > `CHROME_DEBUG_PORT` > `9222`。
 
+Box 多席位约定：`DISPLAY :N` 对应 `/home/box/chrome-profile/Fork-N` 和 CDP `9222+N`。这些 Fork-N 席位彼此隔离；AgentChat 的默认 CDP 始终是保留端口 `9222`，不会默认使用 Fork-5 / `9227`。
+
 > 关闭 provider 客户端或 OneWeb 创建的 tab **不会**停止共享 Chrome 进程 —— CDP 客户端断开只是断开连接。只有 `--stop` 会停止经验证归属的浏览器。
 </details>
 
