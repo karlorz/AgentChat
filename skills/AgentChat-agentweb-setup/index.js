@@ -52,7 +52,7 @@ function usage() {
         '  --json                also print a machine JSON blob on stdout after the table',
         '',
         'Attach-only live mode uses CDP_HOST/CDP_PORT from skills/lib/cdp.js (.env).',
-        'Never autostarts Chrome. Box contract: profile5 / 127.0.0.1:9227 / AGENTCHAT_NO_AUTOSTART=1.',
+        'Never autostarts Chrome. AgentChat defaults to 127.0.0.1:9222 / AGENTCHAT_NO_AUTOSTART=1.',
     ].join('\n');
 }
 
@@ -303,12 +303,12 @@ async function probeClaudeSend(page, snap) {
     return snap;
 }
 
-/** Detach from the shared profile5 CDP. Do not call browser.close — that drops CDP. */
+/** Detach from the configured shared CDP. Do not call browser.close — that drops CDP. */
 function detachBrowser(browser) {
     if (!browser) return;
     try { browser.removeAllListeners('disconnected'); } catch (_) {}
     // Detach the Playwright guest only. NEVER close the shared browser — that logs
-    // CRITICAL CDP drop and can tear down the shared profile5 session.
+    // CRITICAL CDP drop and can tear down the shared browser session.
     if (typeof browser.disconnect === 'function') {
         try { browser.disconnect(); } catch (_) {}
     }
@@ -397,7 +397,7 @@ async function classifyLive(opts, ctx) {
     if (!(await probeCdp(CDP_URL, 4000))) {
         log(`Chrome CDP is NOT reachable on ${CDP_URL}`);
         log('Attach-only: will not start Chrome, :8737, or scripts/chrome-debug.');
-        log('Start the existing profile5 Chrome with remote debugging on 9227, then re-run.');
+        log(`Start the existing AgentChat Chrome with remote debugging at ${CDP_URL}, then re-run.`);
         for (const p of PROVIDER_CHAIN) {
             log(`  official URL ${p.name}: ${p.url}`);
         }
@@ -465,7 +465,7 @@ async function classifyLive(opts, ctx) {
         }
     }
 
-    // Detach only. Leave the shared profile5 CDP (127.0.0.1:9227) attached.
+    // Detach only. Leave the configured shared AgentChat CDP attached.
     detachBrowser(browser);
     return { rows, openedLogin, cdp: CDP_URL };
 }

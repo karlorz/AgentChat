@@ -52,7 +52,8 @@ Every real run (including failures) prints one machine-generated line on **stder
 - Typing passwords, 2FA codes, or sending any chat message through a provider
 
 ### 4. Box / attach contract
-- Attach only to the already-running Chrome via CDP. Default from `.env`: profile5, `127.0.0.1:9227`, `AGENTCHAT_NO_AUTOSTART=1`.
+- Attach only to the already-running Chrome via CDP. AgentChat defaults to `127.0.0.1:9222` with `AGENTCHAT_NO_AUTOSTART=1`.
+- Fork seats are separate: `DISPLAY :N` uses `/home/box/chrome-profile/Fork-N` and CDP `9222+N`. AgentChat never defaults to Fork-5 or `9227`.
 - If CDP is down: print official PROVIDER_CHAIN URLs, emit a failure receipt, stop. Do **not** autostart Chrome.
 
 ## What it classifies
@@ -79,7 +80,7 @@ node skills/AgentChat-agentweb-setup/index.js --json
 node skills/AgentChat-agentweb-setup/index.js --dry-detect --fixtures=skills/AgentChat-agentweb-setup/test/fixtures/browser-pass-2026-08-27.json
 ```
 
-Live mode: attach CDP → scan PROVIDER_CHAIN tabs → print a classification table → for login-needed states, navigate the existing tab to the official PROVIDER_CHAIN URL; if status is not ready AND there is no tab, **open a new tab** on that official URL in the already-running Chrome (never a second Chrome / :8737 / chrome-debug). Detach only — never `browser.close()` on the shared profile5 CDP. Then emit receipt.
+Live mode: attach CDP → scan PROVIDER_CHAIN tabs → print a classification table → for login-needed states, navigate the existing tab to the official PROVIDER_CHAIN URL; if status is not ready AND there is no tab, **open a new tab** on that official URL in the already-running Chrome (never a second Chrome / :8737 / chrome-debug). Detach only — never `browser.close()` on the configured shared CDP. Then emit receipt.
 
 `--dry-detect` never opens Chrome. Use it in tests and when fixtures are passed.
 
