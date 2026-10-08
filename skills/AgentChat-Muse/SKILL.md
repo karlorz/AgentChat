@@ -67,6 +67,21 @@ Do **not** say "Muse is outside PROVIDER_CHAIN". It is on the chain (near end). 
 5. **Repeat Muse chat short + clear** if Muse misses a step. One instruction per message; no novel-length prompts.
 6. **Stop on Karl stop** — exit cleanly, leave thread URL + last state, do not retry.
 
+## Browser endpoint preflight
+
+For browser inspection, resolve the endpoint through AgentChat's shared config loader:
+
+```bash
+AGENTCHAT_CDP_URL=$(node -e 'process.stdout.write(require(process.env.HOME + "/.agents/skills/lib/cdp").CDP_URL)')
+node ~/.agents/skills/AgentChat-OneWeb/index.js --doctor
+playwright-cli attach --cdp="$AGENTCHAT_CDP_URL"
+playwright-cli tab-list
+```
+
+The loader reports the selected `.env` path on stderr. Process environment overrides file values; `CDP_HOST` and `CDP_PORT` select the endpoint. Reuse the existing Muse thread and check for the visible `textarea[placeholder="Message"]` before declaring the session ready. Keep test messages within the user's explicit authorization.
+
+On Box Fork-N desktops, `DISPLAY :N` maps to CDP port `9222+N`. Use this to diagnose a mismatch against the Chrome process and its open tabs. Pin the intended desktop in the local AgentChat `.env`; keep `AGENTCHAT_NO_AUTOSTART=1` for an existing operator-owned browser. The resolved endpoint also applies when using Playwright from another project directory.
+
 ## How to drive Muse as a general agent
 
 Muse "does everything" as an agent worker — treat it like a capable chat LLM with tool/browse phases, not merely an ops checklist:
