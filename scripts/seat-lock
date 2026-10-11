@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# ============================================================
+# seat-lock — acquire / release / renew / status a CDP seat lock
+#
+# Usage:
+#   ./scripts/seat-lock acquire <port> --owner X [--task T] [--pid P|--no-pid] [--ttl-min N]
+#   ./scripts/seat-lock release <port> --owner X [--token T]
+#   ./scripts/seat-lock renew   <port> --owner X --token T
+#   ./scripts/seat-lock status  <port> [--json]
+#
+# Default acquire is TTL-only (no pid): shell callers exit immediately.
+# computerUse/bot holders must renew or release before TTL expiry.
+# ============================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODE_BIN="${AGENTCHAT_NODE:-node}"
+
+if ! command -v "${NODE_BIN}" >/dev/null 2>&1; then
+    echo "[ERROR] node not found on PATH (AGENTCHAT_NODE can override)." >&2
+    exit 1
+fi
+
+exec "${NODE_BIN}" "${SCRIPT_DIR}/lib/seat-lock.cjs" "$@"

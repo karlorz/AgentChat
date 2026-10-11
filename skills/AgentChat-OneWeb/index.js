@@ -77,6 +77,7 @@ const { makeRunId, emitReceipt } = require('../lib/receipt');
 const { log: _log, startTimer: _startTimer, spinner } = require('../lib/terminal');
 const { connectWithRetry: _connectWithRetry, doctorCheck: _doctorCheck, ensureChromeCdp, startHint, isWSL, CDP_URL: LIB_CDP_URL } = require('../lib/cdp');
 const { acquireBrowserSlot, releaseBrowserSlot } = require('../lib/locks');
+const { acquireSeatLock, releaseSeatLock } = require('../lib/seatLock');
 
 // ── Adapt shared modules to OneWeb naming conventions ──
 const PREFIX = 'fallback';
@@ -130,6 +131,15 @@ const doctorCheck = () => _doctorCheck(true, log);
 // configured .env.example's escape hatch still probed the VM-local loopback
 // and got ERR_NO_CDP on every run.
 const CDP_URL = LIB_CDP_URL;
+function configuredCdpPort(cdpUrl) {
+    const m = String(cdpUrl || '').match(/:(\d+)(?:\/|$)/);
+    if (m) return parseInt(m[1], 10);
+    return parseInt(process.env.CDP_PORT || '9222', 10);
+}
+function isMuseOnlyRun(startFrom, singleAttempt) {
+    if (!singleAttempt) return false;
+    return String(startFrom || '').trim().toLowerCase() === 'muse';
+}
 const DEFAULT_TOTAL_TIMEOUT = 600_000; // 10 min total across all providers
 const DEFAULT_PROVIDER_TIMEOUT = 180_000; // 3 min per provider
 const SKILL_DIR = path.dirname(__filename); // skill directory for telemetry
@@ -1332,6 +1342,28 @@ async function main() {
         // (default 3). Timing out the wait degrades EXPLICITLY to uncapped
         // (loud warning) — admission control must never add a deadlock class.
         let browserSlot = null;
+        let museSeatHandle = null;
+        const museOnly = isMuseOnlyRun(startFrom, singleAttempt);
+        if (museOnly) {
+            const seatPort = configuredCdpPort(CDP_URL);
+            museSeatHandle = acquireSeatLock(seatPort, {
+                owner: 'AgentChat-OneWeb',
+                task: 'muse',
+                pid: process.pid,
+            });
+            if (!museSeatHandle) {
+                log('blocked:busy');
+                ctx.recordTelemetry(3);
+                process.exit(3);
+            }
+            const releaseMuseSeat = () => {
+                if (museSeatHandle) {
+                    try { releaseSeatLock(museSeatHandle); } catch (_) {}
+                    museSeatHandle = null;
+                }
+            };
+            process.on('exit', releaseMuseSeat);
+        }
         {
             const slotWait = Math.min(60_000, Math.floor(customTimeout * 0.25));
             browserSlot = await acquireBrowserSlot({ waitMs: slotWait, log });
@@ -1360,6 +1392,10 @@ async function main() {
             });
         } finally {
             releaseBrowserSlot(browserSlot);
+            if (museSeatHandle) {
+                try { releaseSeatLock(museSeatHandle); } catch (_) {}
+                museSeatHandle = null;
+            }
         }
 
         if (result.pending) {

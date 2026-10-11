@@ -239,7 +239,7 @@ server.tool(
 
 server.tool(
     "web_smoke",
-    "检查所有 8 个 AI Provider 的可达性。返回每个 Provider 的状态：REACHABLE / UNREACHABLE / needs login。",
+    `检查所有 ${PROVIDER_CHAIN.length} 个 AI Provider 的可达性。返回每个 Provider 的状态：REACHABLE / UNREACHABLE / needs login。`,
     {},
     async () => {
         try {
