@@ -5,7 +5,7 @@ description: Muse.ai LLM / agent-worker subagent + OneWeb PROVIDER_CHAIN adapter
 
 # AgentChat-Muse — Muse.ai LLM / agent worker (provider + subagent)
 
-> **Last updated**: 2026-09-29
+> **Last updated**: 2026-10-11
 > **Job**: drive Muse.ai as a general **LLM / agent worker** (chat, research, secondary social ops) with a draft-only operator layer. Muse **IS** on OneWeb `PROVIDER_CHAIN` via `skills/lib/providers/adapters/muse.js` (near end — draft/unproven relative to peers). This skill is the operator / subagent layer on top.
 > **Live posture**: draft-only. Adapter selectors are best-effort; live CDP chat prove is out of scope until Karl reopens social/browser work. `:8737` / Coolify stay off. No first GitHub release from this skill.
 
@@ -82,6 +82,20 @@ The loader reports the selected `.env` path on stderr. Process environment overr
 
 On Box Fork-N desktops, `DISPLAY :N` maps to CDP port `9222+N`. Use this to diagnose a mismatch against the Chrome process and its open tabs. Pin the intended desktop in the local AgentChat `.env`; keep `AGENTCHAT_NO_AUTOSTART=1` for an existing operator-owned browser. The resolved endpoint also applies when using Playwright from another project directory.
 
+## Probe states: `ready | needs_human | blocked`
+
+Status names for a read-only Muse readiness check (sends no message). **Spec only:** the `--doctor` probe (fix 1) and the seat lock (fix 2) that will emit these are **not implemented yet**; today `--doctor` still never touches the browser.
+
+| State | Meaning | Who acts |
+| --- | --- | --- |
+| `ready` | CDP seat answers, Muse tab loaded, `textarea[placeholder="Message"]` visible | Agent proceeds |
+| `needs_human:muse_login` | Muse tab URL/redirect hits `authDomains` in `skills/lib/providers/adapters/muse.js` (`muse.ai/login`, `accounts.muse.ai`, `muse.ai/signin`). Detected by the probe. | A human signs in to Muse on the seat's visible Chrome. Agents never type credentials. |
+| `needs_human:target_platform` | The task's target site (X, TikTok, LinkedIn, Meta, ...) wants face liveness, a government ID, SMS/OTP, or a captcha the agent could not pass. **Not judged by the Muse probe.** | The acting bot reports it and stops. No OTP bypass, fake IDs, or face spoofing; SMS needs Karl's approval first. |
+| `blocked` | CDP seat not listening, or port does not match the expected `DISPLAY` (`9222+N` for `:N`) | Fix the seat; do not autostart another Chrome |
+| `blocked:busy` | Seat lock held (another computerUse / AgentChat run on the seat) | Wait; do not share the seat |
+
+Inventory: wiki `raw/transcripts/2026-10-11-note-agentchat-x-muse-auth-and-skill.md`.
+
 ## How to drive Muse as a general agent
 
 Muse "does everything" as an agent worker — treat it like a capable chat LLM with tool/browse phases, not merely an ops checklist:
@@ -108,7 +122,7 @@ Muse "does everything" as an agent worker — treat it like a capable chat LLM w
 | `--prompt-template` | Print short Muse prompt templates (general agent); emit receipt |
 | `--handoff` | Print operator handoff block for desktop Chrome / human; emit receipt |
 | `--smoke` | Verify skill files + productMap + chain/adapter registration; no browser |
-| `--doctor` | Same as smoke + warn if secret-looking pack paths are world-readable |
+| `--doctor` | Same as smoke + warn if secret-looking pack paths are world-readable (no browser; probe states above are planned, not emitted yet) |
 | Live Muse CDP drive / SMS / signup | **Out of scope tonight** — operator / desktop Chrome |
 
 ## Joining the skill set
