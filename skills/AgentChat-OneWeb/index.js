@@ -74,6 +74,12 @@ const {
     resumeChatGptConversation,
 } = require('../lib/providerFactory');
 const { makeRunId, emitReceipt } = require('../lib/receipt');
+const {
+    classifyOneWebOutcome,
+    buildSdkPayload,
+    emitStateLine,
+    expectedSeat,
+} = require('../lib/machineJson');
 const { log: _log, startTimer: _startTimer, spinner } = require('../lib/terminal');
 const { connectWithRetry: _connectWithRetry, doctorCheck: _doctorCheck, ensureChromeCdp, startHint, isWSL, CDP_URL: LIB_CDP_URL } = require('../lib/cdp');
 const { acquireBrowserSlot, releaseBrowserSlot } = require('../lib/locks');
@@ -164,13 +170,43 @@ class InvocationContext {
             total_ms: 0,
             per_provider_ms: {},
             exit_code: 0,
+            model_used: '',
         };
+        // AQ-008 / D11: classifyOneWebOutcome reads these (muse_login vs login,
+        // blocked:busy). Set by main() before recordTelemetry.
+        this.museOnly = false;
+        this.busy = false;
     }
 
     recordTelemetry(code) {
         this.telemetry.exit_code = code;
         const f = path.join(SKILL_DIR, 'data', 'fallback-telemetry.jsonl');
         appendWithRotation(f, JSON.stringify(this.telemetry) + '\n');
+        const port = configuredCdpPort(CDP_URL);
+        const seat = expectedSeat(port);
+        const classified = classifyOneWebOutcome({
+            exit: code,
+            reasons: this.telemetry.fallback_reasons,
+            providerUsed: this.telemetry.provider_used,
+            providersTried: this.telemetry.providers_tried,
+            busy: this.busy,
+            museOnly: this.museOnly,
+        });
+        const statePayload = buildSdkPayload({
+            ...classified,
+            ...seat,
+            port,
+            checked_at: new Date().toISOString(),
+            provider_used: this.telemetry.provider_used,
+            fallback_chain: this.telemetry.providers_tried || [],
+            model_used: this.telemetry.model_used || '',
+            total_ms: this.telemetry.total_ms,
+            exit: code,
+            run_id: this.runId,
+        });
+        // Machine JSON for the Python SDK (session.py). Human logs stay
+        // above; stdout remains the raw AI response.
+        emitStateLine(statePayload);
         // Execution receipt — single choke point covering every exit path
         // (success AND failure both prove "the skill ran"). STDERR on purpose:
         // this file's stdout is the raw-response machine contract consumed
@@ -184,7 +220,15 @@ class InvocationContext {
                 exit: code,
                 provider_used: this.telemetry.provider_used,
                 providers_tried: this.telemetry.providers_tried,
+                fallback_chain: this.telemetry.providers_tried || [],
                 total_ms: this.telemetry.total_ms,
+                model_used: this.telemetry.model_used || '',
+                state: statePayload.state,
+                reason: statePayload.reason,
+                seat: statePayload.seat,
+                port: statePayload.port,
+                display: statePayload.display,
+                checked_at: statePayload.checked_at,
                 ...(this.telemetry.outcome ? { outcome: this.telemetry.outcome } : {}),
                 ...(this.telemetry.safe_to_resend !== undefined
                     ? { safe_to_resend: this.telemetry.safe_to_resend }
@@ -959,6 +1003,7 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
         ctx.telemetry.fallback_reasons = fallbackReasons;
         ctx.telemetry.total_ms = Date.now() - overallStart;
         ctx.telemetry.response_length_chars = result.response ? result.response.length : 0;
+        if (result.model_used) ctx.telemetry.model_used = result.model_used;
 
         log(`\n✓ ${provider.name}: USED (${result.response.length} chars, ${ctx.telemetry.total_ms}ms total)`);
         if (triedProviders.length > 1) {
@@ -1323,6 +1368,7 @@ async function main() {
             ctx.telemetry.provider_used = 'ChatGPT';
             ctx.telemetry.providers_tried = ['chatgpt'];
             ctx.telemetry.total_ms = Date.now() - new Date(ctx.telemetry.timestamp).getTime();
+            if (resumed.model_used) ctx.telemetry.model_used = resumed.model_used;
             if (resumed.success) {
                 ctx.telemetry.response_length_chars = resumed.response.length;
                 ctx.recordTelemetry(0);
@@ -1344,6 +1390,7 @@ async function main() {
         let browserSlot = null;
         let museSeatHandle = null;
         const museOnly = isMuseOnlyRun(startFrom, singleAttempt);
+        ctx.museOnly = museOnly;
         if (museOnly) {
             const seatPort = configuredCdpPort(CDP_URL);
             museSeatHandle = acquireSeatLock(seatPort, {
@@ -1353,6 +1400,7 @@ async function main() {
             });
             if (!museSeatHandle) {
                 log('blocked:busy');
+                ctx.busy = true;
                 ctx.recordTelemetry(3);
                 process.exit(3);
             }

@@ -2401,7 +2401,7 @@ function createProviderRunner(cfg) {
         if (ctx && ctx.telemetry) {
             ctx.telemetry.per_provider_ms[C.key] = Date.now() - provStart;
         }
-        return { success: true, response };
+        return { success: true, response, ...(C.model_used ? { model_used: C.model_used } : {}) };
     };
 }
 

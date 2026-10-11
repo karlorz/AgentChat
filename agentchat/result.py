@@ -30,6 +30,15 @@ class AskResult:
     success: bool = True
     """是否成功获取响应"""
 
+    state: str = ""
+    """PR #12 probe state: ready | needs_human | blocked (from CLI machine JSON)."""
+
+    reason: object = None
+    """PR #12 sub-kind (null when ready). Never a concatenated 'needs_human:…' string."""
+
+    run_id: str = ""
+    """CLI receipt run_id (ac-…)."""
+
     @property
     def time_seconds(self) -> float:
         """总耗时（秒）"""

@@ -308,6 +308,7 @@ module.exports = {
             // We never substitute Flash-Lite or an arbitrary active model.
             if (await ensureProExtended(page, 1, log)) {
                 log('gemini: Pro Extended Thinking active (Pro subscription)');
+                if (cfg) cfg.model_used = 'Pro Extended';
                 return;
             }
             log('gemini: Pro Extended unavailable, falling back to verified newest full Flash...');
@@ -318,6 +319,7 @@ module.exports = {
         // Pro or Flash-Lite selection on a reused tab.
         if (await ensureFlash(page, log)) {
             log(`gemini: newest full Flash + Extended Thinking active (${usingPro ? 'Pro fallback' : 'default'})`);
+            if (cfg) cfg.model_used = 'Flash';
             return;
         }
 
