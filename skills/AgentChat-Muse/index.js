@@ -14,9 +14,10 @@
  *   node skills/AgentChat-Muse/index.js --handoff
  *   node skills/AgentChat-Muse/index.js --smoke
  *   node skills/AgentChat-Muse/index.js --doctor
+ *   node skills/AgentChat-Muse/index.js --doctor-static
  *   node skills/AgentChat-Muse/index.js --json
  *
- * Exit: 0 ok · 64 usage · 4 internal
+ * Exit: 0 ok/ready · 2 needs_human (--doctor) · 3 blocked (--doctor) · 64 usage · 4 internal
  */
 'use strict';
 
@@ -45,16 +46,18 @@ const PROVIDER_NOTE =
 
 function usage() {
     return [
-        'Usage: node index.js [--ops-checklist] [--worker-plan] [--prompt-template] [--handoff] [--smoke] [--doctor] [--json]',
+        'Usage: node index.js [--ops-checklist] [--worker-plan] [--prompt-template] [--handoff] [--smoke] [--doctor] [--doctor-static] [--json]',
         '  (default) --ops-checklist   print draft-only Muse ops rules + handoff template',
         '  --worker-plan               print how to drive Muse as chat/research/social worker',
         '  --prompt-template           print short Muse prompt templates (general agent)',
         '  --handoff                   print operator desktop-Chrome handoff block',
         '  --smoke                     verify skill files + productMap + chain/adapter',
-        '  --doctor                    smoke + warn on world-readable pack paths if present',
-        '  --json                      also print a machine JSON summary on stdout',
+        '  --doctor                    live read-only Muse CDP probe (one JSON line on stdout)',
+        '  --doctor-static             smoke + warn on world-readable pack paths if present',
+        '  --json                      also print a machine JSON summary on stdout (not with --doctor)',
         '',
-        'Never opens Muse CDP, never triggers SMS, never posts. Draft / operator handoff only.',
+        '--doctor never types, never navigates an existing tab, never starts Chrome.',
+        'Never triggers SMS, never posts. Draft / operator handoff only (non-doctor modes).',
         PROVIDER_NOTE,
     ].join('\n');
 }
@@ -67,6 +70,7 @@ function parseArgs(argv) {
         handoff: false,
         smoke: false,
         doctor: false,
+        doctorStatic: false,
         json: false,
         help: false,
         unknown: null,
@@ -91,6 +95,9 @@ function parseArgs(argv) {
             sawMode = true;
         } else if (a === '--doctor') {
             out.doctor = true;
+            sawMode = true;
+        } else if (a === '--doctor-static') {
+            out.doctorStatic = true;
             sawMode = true;
         } else if (a === '--json') out.json = true;
         else out.unknown = a;
@@ -285,7 +292,7 @@ function runSmoke() {
     };
 }
 
-function runDoctor() {
+function runDoctorStatic() {
     const smoke = runSmoke();
     const packRoot = '/workspace/archive/2026-09/social-secondary-2026-09-27';
     const warnings = [];
@@ -312,10 +319,24 @@ function runDoctor() {
     }
     for (const w of warnings) log(`doctor WARN: ${w}`);
     if (!warnings.length) log('doctor: no pack-permission warnings');
-    return { ...smoke, mode: 'doctor', warnings };
+    return { ...smoke, mode: 'doctor-static', warnings };
 }
 
-function main() {
+async function runLiveDoctor() {
+    const doctor = require('./doctor');
+    const result = await doctor.probe({ env: process.env, pid: process.pid, log });
+    const pub = doctor.publicResult(result);
+    process.stdout.write(JSON.stringify(pub) + '\n');
+    return {
+        mode: 'doctor',
+        ...pub,
+        live_muse: true,
+        draft_only: true,
+        _exit: doctor.exitCodeFor(result.state),
+    };
+}
+
+async function main() {
     const args = parseArgs(process.argv.slice(2));
     if (args.help) {
         console.log(usage());
@@ -333,20 +354,23 @@ function main() {
     let exit = 0;
 
     try {
-        if (args.smoke) summary = runSmoke();
-        else if (args.doctor) summary = runDoctor();
+        if (args.doctor) summary = await runLiveDoctor();
+        else if (args.smoke) summary = runSmoke();
+        else if (args.doctorStatic) summary = runDoctorStatic();
         else if (args.workerPlan) summary = printWorkerPlan();
         else if (args.promptTemplate) summary = printPromptTemplate();
         else if (args.handoff) summary = printHandoff();
         else summary = printOpsChecklist();
 
-        if (summary && summary.ok === false) exit = 4;
+        if (summary && summary._exit != null) exit = summary._exit;
+        else if (summary && summary.ok === false) exit = 4;
     } catch (e) {
         log(`FATAL: ${e && e.message ? e.message : e}`);
         summary = { mode: 'error', error: String(e && e.message ? e.message : e) };
         exit = 4;
     }
 
+    const liveDoctor = !!(summary && summary.mode === 'doctor');
     const receipt = emitReceipt({
         skillDir: SKILL_DIR,
         skill: SKILL,
@@ -356,13 +380,15 @@ function main() {
             mode: summary && summary.mode,
             total_ms: Date.now() - started,
             draft_only: true,
-            live_muse: false,
+            live_muse: liveDoctor,
             on_provider_chain: true,
         },
         stream: 'stderr',
     });
 
-    if (args.json) {
+    // --doctor already printed its one JSON line on stdout; --json must not
+    // add a second blob.
+    if (args.json && !args.doctor) {
         console.log(JSON.stringify({ summary, receipt }, null, 2));
     }
 
@@ -370,7 +396,10 @@ function main() {
 }
 
 if (require.main === module) {
-    main();
+    main().catch((e) => {
+        log(`FATAL: ${e && e.message ? e.message : e}`);
+        process.exit(4);
+    });
 }
 
 module.exports = {
@@ -379,5 +408,7 @@ module.exports = {
     printWorkerPlan,
     printPromptTemplate,
     printHandoff,
+    runSmoke,
+    runDoctorStatic,
     EXAMPLE_THREADS,
 };

@@ -111,6 +111,43 @@ Muse "does everything" as an agent worker — treat it like a capable chat LLM w
 | `--doctor` | Same as smoke + warn if secret-looking pack paths are world-readable |
 | Live Muse CDP drive / SMS / signup | **Out of scope tonight** — operator / desktop Chrome |
 
+## Doctor probe and seat lock (usage)
+
+Live read-only Muse probe. Never types, never sends a prompt, never navigates an existing tab, never starts Chrome (`AGENTCHAT_NO_AUTOSTART=1`):
+
+```bash
+node skills/AgentChat-Muse/index.js --doctor
+```
+
+Stdout is exactly one JSON line (human detail on stderr; `--json` does not print a second stdout blob):
+
+```json
+{"state":"ready","reason":null,"seat":"Fork-5","port":9227,"display":":5","checked_at":"2026-10-11T06:00:00.000Z"}
+```
+
+`state` is `ready` | `needs_human` | `blocked`. `reason` is the sub-kind (`null` when ready; `seat` | `busy` | `muse_login` | `no_input` | `cdp_error` when not). This probe never emits `needs_human:target_platform` (task flow sets that).
+
+Exit codes: `0` ready · `2` needs_human · `3` blocked.
+
+Default CDP is `CDP_HOST`/`CDP_PORT` or `127.0.0.1:9227` (Fork-5). Seat lock is read-only here — `--doctor` never acquires it.
+
+Former smoke + pack-permission doctor:
+
+```bash
+node skills/AgentChat-Muse/index.js --doctor-static
+```
+
+Seat lock CLI (TTL-only by default because shell callers exit immediately; computerUse/bot holders must `renew` or `release`):
+
+```bash
+scripts/seat-lock acquire 9227 --owner computerUse --task muse --ttl-min 30
+scripts/seat-lock status 9227 --json
+scripts/seat-lock renew 9227 --owner computerUse --token <token>
+scripts/seat-lock release 9227 --owner computerUse --token <token>
+```
+
+Lock path: `${AGENTCHAT_SEAT_LOCK_DIR:-/tmp}/agentchat-seat-<port>.lock`. OneWeb acquires this lock only for muse-only runs (`--only=muse` / `--from=muse --single`); busy logs `blocked:busy` and exits 3 without touching the page.
+
 ## Joining the skill set
 
 * Directory: `skills/AgentChat-Muse/`
