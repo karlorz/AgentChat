@@ -1838,6 +1838,19 @@ async function checkOverlays(page, C) {
         const dismissable = (C.dismissPatterns || []).some(p => p.test(text));
         const dismissed = await tryDismissOverlay(page, el);
         if (!dismissed) {
+            // ChatGPT homepage chips / sidebar chat titles match OVERLAY_SEL
+            // ([class*="dialog"] / [class*="overlay"]) but have no close
+            // button. If the composer is already usable, skip as furniture.
+            if (C.skipUndismissableFurniture) {
+                // Sidebar recents are short single-line titles ("Fix SSH Host
+                // Key") and often appear before the composer is visible.
+                const shortTitle = text.length < 80 && !/\n/.test(text);
+                if (shortTitle) continue;
+                const editorSel = (C.editorSelectors && C.editorSelectors[0]) || '#prompt-textarea';
+                const editorVis = await page.locator(editorSel).first()
+                    .isVisible({ timeout: 300 }).catch(() => false);
+                if (editorVis) continue;
+            }
             const kind = dismissable ? 'known overlay' : 'unrecognized overlay';
             return { block: 'error', detail: `${kind} stuck: ${text.slice(0, 120)}` };
         }

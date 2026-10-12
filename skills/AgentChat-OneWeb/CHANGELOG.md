@@ -1,5 +1,12 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-10-12 — ChatGPT homepage starter chips are not overlays
+- **[P0] ChatGPT overlay false block**: chatgpt.com homepage suggestion chips (`Find emails I can unsubscribe from`, `Find the latest docs related to a project…`, `Prep me for my next meet`) match OVERLAY_SEL (`[class*="dialog"]` / `[class*="overlay"]`) but have no close button. `checkOverlays` then returned `unrecognized overlay stuck` and a logged-in ChatGPT session exited 9 (`ALL_EXHAUSTED`) at `overlay_check`.
+- **Fix**: `adapters/chatgpt.js` `skipOverlayPatterns` for those chips plus `What can I help with`. Same pattern as MiMo's permanent footer skip.
+- **Follow-up**: after the chip skip, overlay_check then stuck on a sidebar title (`Fix SSH Host Key`). `skipUndismissableFurniture` skips undismissable OVERLAY_SEL hits that are short single-line titles, or when `#prompt-textarea` is already visible. Real quota/auth overlay text still hard-blocks.
+- **Stop-button drift**: add ChatGPT `stop-generating-button` / `Stop streaming` / `停止生成` selectors.
+- **Response DOM drift (2026-10-12 live)**: chatgpt.com conversation turns no longer expose `.markdown` or `data-message-author-role`. Assistant text is in `[class*="MarkdownRoot"]`. Do not use `[data-markdown-copy]` — it also wraps the user bubble and echo-rejects the prompt as `submitted_pending`. Copy `chatgpt.js` and `providerFactory.js` into `~/.agents/skills/lib/` for skill-only installs.
+
 ## 2026-10-11 — AQ-008 / D11 machine JSON for the Python SDK
 - **[P1] Tagged stderr state line**: every OneWeb ask() path (success and failure) now emits `[oneweb] AGENTCHAT_STATE {json}` in addition to the existing `[receipt] AGENTCHAT_RUN` line. Stdout stays the raw AI response.
 - **[P1] PR #12 schema**: the state object always includes the Muse doctor 6-key probe fields `{state, reason, seat, port, display, checked_at}` (`state` ∈ `ready|needs_human|blocked`; `reason` is a sub-kind, `null` when ready; never a concatenated `needs_human:muse_login` string) plus SDK fields `provider_used`, `fallback_chain`, `model_used`, `total_ms`, `exit`, `run_id`.

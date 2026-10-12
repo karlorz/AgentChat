@@ -382,6 +382,19 @@ const adapter = {
         ...COMMON_DISMISS_PATTERNS,
         /welcome\s*back/i,
     ],
+    // ChatGPT 2026 homepage starter chips ("Find emails I can unsubscribe from",
+    // "Find the latest docs related to a project…", "Prep me for my next meet")
+    // sit in a container that matches OVERLAY_SEL ([class*="dialog"] /
+    // [class*="overlay"]) but are not a dismissable modal. Without this skip,
+    // overlay_check returns unrecognized overlay stuck and the logged-in
+    // provider is marked ALL_EXHAUSTED.
+    skipOverlayPatterns: [
+        /find emails i can unsubscribe/i,
+        /find the latest docs related to a project/i,
+        /prep me for my next mee/i,
+        /what can i help with/i,
+    ],
+    skipUndismissableFurniture: true,
     editorSelectors: [
         '#prompt-textarea',                          // ProseMirror div (visible, React-mounted)
         '[contenteditable="true"][role="textbox"]',  // generic ProseMirror
@@ -414,13 +427,19 @@ const adapter = {
     sendFallback: 'Enter',
     stopSelectors: [
         'button[data-testid="stop-button"]',
-        'button[aria-label="Stop"]',
+        'button[data-testid="stop-generating-button"]',
+        'button[aria-label="Stop streaming"]',
+        'button[aria-label="Stop generating"]',
+        'button[aria-label="停止生成"]',
     ],
     responseSelectors: [
+        // 2026 chatgpt.com: assistant body is MarkdownRoot. data-markdown-copy
+        // also wraps the USER bubble; using it makes extractResponse echo-reject
+        // the prompt and emit submitted_pending.
+        '[class*="MarkdownRoot"]',
         '.markdown',
         '[data-message-author-role="assistant"]',
         '.agent-turn',
-        '[class*="response"]',
     ],
     // v13: DALL·E mounts the generated <img> as a SIBLING of the .markdown
     // text container inside the assistant turn — scanning only the matched
