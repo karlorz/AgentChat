@@ -12,12 +12,78 @@ tab 生命周期、降级链。
 
 import asyncio
 import os
-import re
 import json
 from pathlib import Path
 from typing import Optional
 
 from .result import AskResult
+
+STATE_PREFIX = "[oneweb] AGENTCHAT_STATE "
+RECEIPT_PREFIX = "[receipt] AGENTCHAT_RUN "
+
+
+def _parse_last_tagged_json(text: str, prefix: str):
+    """Last tagged JSON object on a blob. Malformed → None."""
+    if not text or not prefix:
+        return None
+    idx = text.rfind(prefix)
+    if idx < 0:
+        return None
+    rest = text[idx + len(prefix):]
+    line = rest.split("\n", 1)[0].strip()
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _parse_receipt_or_state(stderr: str):
+    """Prefer AGENTCHAT_STATE; fall back to the receipt JSON."""
+    return (
+        _parse_last_tagged_json(stderr, STATE_PREFIX)
+        or _parse_last_tagged_json(stderr, RECEIPT_PREFIX)
+    )
+
+
+def _state_error(payload) -> str:
+    if not payload:
+        return ""
+    state = payload.get("state") or ""
+    reason = payload.get("reason")
+    if state and reason:
+        return f"{state}:{reason}"
+    return state or ""
+
+
+def _apply_machine_json(result: AskResult, payload: dict, elapsed_ms: int) -> None:
+    """Fill AskResult from CLI machine JSON. Does not read human log lines."""
+    provider = payload.get("provider_used")
+    if provider:
+        result.provider_used = str(provider)
+    chain = payload.get("fallback_chain")
+    if chain is None:
+        chain = payload.get("providers_tried")
+    if isinstance(chain, list):
+        result.fallback_chain = [str(p) for p in chain if p is not None and str(p).strip()]
+        if result.fallback_chain and not result.provider_used:
+            result.provider_used = result.fallback_chain[-1]
+    model = payload.get("model_used")
+    if model:
+        result.model_used = str(model)
+    if "total_ms" in payload:
+        try:
+            result.total_time_ms = int(payload.get("total_ms") or elapsed_ms)
+        except (TypeError, ValueError):
+            result.total_time_ms = elapsed_ms
+    state = payload.get("state")
+    if state:
+        result.state = str(state)
+    if "reason" in payload:
+        result.reason = payload.get("reason")
+    run_id = payload.get("run_id")
+    if run_id:
+        result.run_id = str(run_id)
 
 
 class GeminiSession:
@@ -189,57 +255,30 @@ class GeminiSession:
     def _parse_result(
         self, stdout: str, stderr: str, elapsed_ms: int, exit_code: int
     ) -> AskResult:
-        """从 CLI 输出中提取结构化信息"""
+        """Parse CLI machine JSON (AGENTCHAT_STATE, else receipt). No human-stderr scrape."""
         result = AskResult(
             response=stdout,
             exit_code=exit_code,
             total_time_ms=elapsed_ms,
         )
+        payload = _parse_receipt_or_state(stderr)
+        if payload:
+            _apply_machine_json(result, payload, elapsed_ms)
 
         if exit_code != 0:
             result.success = False
             if not stdout:
-                result.response = self._extract_error(stderr)
+                result.response = self._extract_error(stderr) or _state_error(payload)
             return result
 
         if not stdout or len(stdout) < 5:
             result.success = False
-            result.response = self._extract_error(stderr) or "(empty response)"
+            result.response = (
+                self._extract_error(stderr)
+                or _state_error(payload)
+                or "(empty response)"
+            )
             return result
-
-        # 提取 Provider 信息
-        for line in stderr.split("\n"):
-            # "✓ Gemini: USED (849 chars, 156982ms total)"
-            m = re.search(r"✓\s*(\w+):\s*USED", line)
-            if m:
-                result.provider_used = m.group(1)
-                break
-
-        # 提取降级链
-        for line in stderr.split("\n"):
-            # "Fallback chain: gemini → chatgpt → claude → qwen (3 provider(s) skipped)"
-            m = re.search(r"Fallback chain:\s*(.+)", line)
-            if m:
-                # 去掉末尾的 "(N provider(s) skipped)" 括号说明
-                raw = re.sub(r"\s*\(\d+\s*provider\(s\)\s*skipped\)", "", m.group(1))
-                result.fallback_chain = [
-                    p.strip() for p in raw.split("→") if p.strip()
-                ]
-                # 如果有降级链，设置 provider_used 为最后一个
-                if result.fallback_chain and not result.provider_used:
-                    result.provider_used = result.fallback_chain[-1]
-                break
-
-        # 提取模型信息
-        if "Pro Extended" in stderr:
-            result.model_used = "Pro Extended"
-        elif "Flash" in stderr or "Flash-Lite" in stderr:
-            result.model_used = "Flash"
-
-        # 提取时间信息
-        m = re.search(r"(\d+)ms total", stderr)
-        if m:
-            result.total_time_ms = int(m.group(1))
 
         return result
 

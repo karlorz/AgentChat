@@ -1,5 +1,11 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-10-11 — AQ-008 / D11 machine JSON for the Python SDK
+- **[P1] Tagged stderr state line**: every OneWeb ask() path (success and failure) now emits `[oneweb] AGENTCHAT_STATE {json}` in addition to the existing `[receipt] AGENTCHAT_RUN` line. Stdout stays the raw AI response.
+- **[P1] PR #12 schema**: the state object always includes the Muse doctor 6-key probe fields `{state, reason, seat, port, display, checked_at}` (`state` ∈ `ready|needs_human|blocked`; `reason` is a sub-kind, `null` when ready; never a concatenated `needs_human:muse_login` string) plus SDK fields `provider_used`, `fallback_chain`, `model_used`, `total_ms`, `exit`, `run_id`.
+- **[P1] Python SDK**: `agentchat/session.py` parses that JSON (STATE, then receipt). It no longer regex-scrapes human `✓ USED` / `Fallback chain:` / `Pro Extended` / `ms total` stderr.
+- **[test]** `skills/lib/test/test_machine_json.js`, `test/test_session_parse.py`
+
 ## 2026-09-28 — Restore Gemini English Pro Extended menu parity
 - **[P0] Current English locale detection**: recognize Gemini's `Open mode picker, currently ...` aria-label and discover it with case-insensitive model-button selectors. The visible model control remains authoritative when browser and page language differ.
 - **[P0] Extended-thinking selection**: allow the English `Extended thinking` row even though it also matches the generic `Thinking` pattern; generic parent rows remain excluded. This restores the focused behavior from upstream PR #14 without merging unrelated old `dev` changes.

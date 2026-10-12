@@ -435,8 +435,27 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --resume-chatgpt="https://chatgp
 ## Output & Telemetry
 
 - **stdout**: 成功时输出 AI 响应原文
-- **stderr**: 诊断日志，`[fallback]` 前缀
+- **stderr**: 诊断日志，`[fallback]` 前缀；plus one `[oneweb] AGENTCHAT_STATE {json}` line and one `[receipt] AGENTCHAT_RUN {json}` line (AQ-008 / D11)
 - **telemetry**: 写入 `~/.agents/skills/AgentChat-OneWeb/data/fallback-telemetry.jsonl`
+
+Python SDK (`agentchat/session.py`) parses `AGENTCHAT_STATE` (then the receipt). It does not scrape human `✓ USED` / `Fallback chain:` lines. The state object matches the Muse doctor / PR #12 probe schema — `state` ∈ `ready|needs_human|blocked`, `reason` is a sub-kind (`null` when ready), plus SDK fields:
+
+```json
+{
+  "state": "ready",
+  "reason": null,
+  "seat": "AgentChat",
+  "port": 9222,
+  "display": null,
+  "checked_at": "2026-10-11T00:00:00.000Z",
+  "provider_used": "Gemini",
+  "fallback_chain": ["gemini"],
+  "model_used": "Flash",
+  "total_ms": 1500,
+  "exit": 0,
+  "run_id": "ac-xxxxxxxxxxxx"
+}
+```
 
 ```json
 {
