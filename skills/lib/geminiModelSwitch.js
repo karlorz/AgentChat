@@ -41,8 +41,8 @@
  * This is the CANONICAL implementation — used by OneWeb.
  *
  * Usage:
- *   const { ensureProExtended } = require('../lib/geminiModelSwitch');
- *   const ok = await ensureProExtended(page, maxRetries, onLog);
+ *   const { ensureArgon, ensureProExtended } = require('../lib/geminiModelSwitch');
+ *   const ok = await ensureArgon(page, onLog);
  */
 
 const fs = require('fs');
@@ -74,10 +74,17 @@ const isProExtendedAria = (t) => /\bPro\b/i.test(String(t || '')) && includesExt
 const proDesc           = () => asRe(L.txt('proDesc'));
 const modelBtnSelector  = () => L.modelBtnCSS();
 
-// Default Flash is the newest full Flash item actually present in the
-// verified model menu, plus independently selected Extended Thinking.
-// Do not pin a literal version (e.g. 3.6): locales may already have retired
-// that label. Never Lite/Pro/Ultra, never generic composer "Flash".
+// Default model is the newest Argon item actually present in the verified
+// model menu, plus independently selected high reasoning. Do not pin a
+// literal version (e.g. 4 Argon): the live menu label is the source of
+// truth. Never Lite/Pro/Ultra/Flash/Spark, and never treat generic composer
+// "Argon" / "Flash" aria as proof — inspect checked menu rows.
+const DEFAULT_ARGON_MODEL = Object.freeze({
+    id: 'newest-argon',
+    displayName: 'newest Argon',
+});
+
+// Opt-in Flash remains the newest full Flash item in the verified menu.
 const DEFAULT_FLASH_MODEL = Object.freeze({
     id: 'newest-full-flash',
     displayName: 'newest full Flash',
@@ -85,7 +92,23 @@ const DEFAULT_FLASH_MODEL = Object.freeze({
 
 const FLASH_TIER_RE = /\b(?:Lite|Pro|Ultra)\b/i;
 const FLASH_WORD_RE = /\bFlash\b/i;
+const ARGON_WORD_RE = /\bArgon\b/i;
+const ARGON_EXCLUDE_RE = /\b(?:Lite|Flash|Pro|Ultra|Spark)\b/i;
 const LEADING_VERSION_RE = /^(\d+(?:\.\d+)*)/;
+
+/**
+ * Map AGENTCHAT_GEMINI_MODEL to a routing key.
+ * Unset, `argon`, `default`, and the legacy documented default `flash` all
+ * mean newest Argon + high reasoning so an installed `.env` of
+ * AGENTCHAT_GEMINI_MODEL=flash cannot keep forcing Flash + Extended Thinking.
+ * Explicit opt-in: `pro`, `full-flash`.
+ */
+function resolveGeminiModelChoice(raw) {
+    const source = arguments.length > 0 ? raw : process.env.AGENTCHAT_GEMINI_MODEL;
+    const v = String(source == null ? '' : source).trim().toLowerCase();
+    if (!v || v === 'argon' || v === 'flash' || v === 'default') return 'argon';
+    return v;
+}
 
 function normalizeMenuText(text) {
     return String(text || '').trim().replace(/\s+/g, ' ');
@@ -124,20 +147,60 @@ function flashMenuLabel(itemOrText) {
     return m ? `${m[1]} Flash` : (normalized || DEFAULT_FLASH_MODEL.displayName);
 }
 
-function pickNewestFullFlash(items) {
+function pickNewestMatching(items, isCandidate, parseVersion, allowUnversioned) {
     if (!Array.isArray(items)) return null;
     let best = null;
     let bestVer = null;
     for (const item of items) {
-        if (!item || !isDefaultFlashText(item.text)) continue;
-        const ver = parseLeadingModelVersion(item.text);
-        if (!ver) continue;
-        if (!best || compareModelVersions(ver, bestVer) > 0) {
+        if (!item || !isCandidate(item.text)) continue;
+        const ver = parseVersion(item.text);
+        if (!ver && !allowUnversioned) continue;
+        if (!best) {
+            best = item;
+            bestVer = ver;
+            continue;
+        }
+        if (compareModelVersions(ver || '0', bestVer || '0') > 0) {
             best = item;
             bestVer = ver;
         }
     }
     return best;
+}
+
+function pickNewestFullFlash(items) {
+    return pickNewestMatching(items, isDefaultFlashText, parseLeadingModelVersion, false);
+}
+
+function parseArgonVersion(text) {
+    const normalized = normalizeMenuText(text);
+    const before = normalized.match(/(\d+(?:\.\d+)*)\s+Argon\b/i);
+    if (before) return before[1];
+    const after = normalized.match(/\bArgon\s+(\d+(?:\.\d+)*)/i);
+    if (after) return after[1];
+    return parseLeadingModelVersion(normalized);
+}
+
+function isDefaultArgonText(text) {
+    const normalized = normalizeMenuText(text);
+    if (!ARGON_WORD_RE.test(normalized)) return false;
+    if (ARGON_EXCLUDE_RE.test(normalized)) return false;
+    return true;
+}
+
+function argonMenuLabel(itemOrText) {
+    const text = (typeof itemOrText === 'string' || itemOrText == null)
+        ? itemOrText
+        : itemOrText.text;
+    const normalized = normalizeMenuText(text);
+    const m = normalized.match(/(\d+(?:\.\d+)*)\s+Argon\b/i);
+    if (m) return `${m[1]} Argon`;
+    if (ARGON_WORD_RE.test(normalized)) return 'Argon';
+    return DEFAULT_ARGON_MODEL.displayName;
+}
+
+function pickNewestArgon(items) {
+    return pickNewestMatching(items, isDefaultArgonText, parseArgonVersion, true);
 }
 
 function isSelectedGeminiModelItem(item) {
@@ -150,18 +213,77 @@ function isDefaultFlashItem(item) {
     return isSelectedGeminiModelItem(item) && isDefaultFlashText(item.text);
 }
 
+function isDefaultArgonItem(item) {
+    return isSelectedGeminiModelItem(item) && isDefaultArgonText(item.text);
+}
+
 const EXTENDED_THINKING_RE = /(?:延伸思考|延長思考|扩展思考|Extended\s+thinking|拡張思考)/i;
+// Live zh-TW Argon submenu (2026-10-14): "高 詳盡徹底" — not a bare 高.
+const HIGH_LEVEL_RE = /(?:High\s+reasoning|Thinking\s*(?:level|effort|mode)?\s*[:·\-–]?\s*High|\bHigh\b|^高(?:\s|$)|詳盡徹底|高階(?:推理|思考|模式)?|高推理|高度思考|高強度思考|深度思考|進階思考|Think\s+longer|More\s+thinking)/i;
+const THINKING_PARENT_RE = /^(?:思考程度|思考水平|思考水準|思考等级|思考等級|思考レベル|Thinking(?:\s+(?:level|effort|mode))?)(?:\s|$)/i;
+const LOW_MEDIUM_RE = /(?:\bLow\b|\bMedium\b|\bFast\b|^低(?:\s|$)|快捷高效|^中等(?:\s|$)|深度適中|快速思考)/i;
+// High reasoning is the current Gemini UI control for high/extended
+// reasoning on Argon. Keep the Flash-era Extended Thinking labels as the
+// same family so a renamed row still counts; do not require a Flash-only
+// 延伸思考 identity.
+function highReasoningRank(text) {
+    const t = String(text || '').trim();
+    if (!t) return 0;
+    // Live Low/Medium rows must lose even if a later High synonym overlaps
+    // (e.g. 中等 深度適中 vs 深度思考).
+    if (LOW_MEDIUM_RE.test(t) && !HIGH_LEVEL_RE.test(t)) return 0;
+    if (HIGH_LEVEL_RE.test(t)) return 2;
+    if (EXTENDED_THINKING_RE.test(t)) return 1;
+    return 0;
+}
+
+function isThinkingParentText(text) {
+    const t = String(text || '').trim();
+    if (!t) return false;
+    if (HIGH_LEVEL_RE.test(t) || EXTENDED_THINKING_RE.test(t)) return false;
+    return THINKING_PARENT_RE.test(t);
+}
 
 function isExtendedThinkingText(text) {
     return EXTENDED_THINKING_RE.test(String(text || '').trim());
 }
 
-function isDefaultFlashExtendedMenuState(items) {
-    if (!Array.isArray(items)) return false;
-    const newest = pickNewestFullFlash(items);
+function isHighReasoningText(text) {
+    return highReasoningRank(text) > 0;
+}
+
+function pickPreferredHighReasoning(items) {
+    if (!Array.isArray(items)) return null;
+    let best = null;
+    let bestRank = 0;
+    for (const item of items) {
+        const rank = highReasoningRank(item && item.text);
+        if (rank > bestRank) {
+            best = item;
+            bestRank = rank;
+        }
+    }
+    return best;
+}
+
+function isPreferredHighReasoningSelected(items) {
+    const preferred = pickPreferredHighReasoning(items);
+    return !!(preferred && isSelectedGeminiModelItem(preferred));
+}
+
+function isVerifiedMenuState(items, pick) {
+    if (!Array.isArray(items) || typeof pick !== 'function') return false;
+    const newest = pick(items);
     return !!(newest && isSelectedGeminiModelItem(newest)
-        && items.some(item => isSelectedGeminiModelItem(item)
-            && isExtendedThinkingText(item && item.text)));
+        && isPreferredHighReasoningSelected(items));
+}
+
+function isDefaultFlashExtendedMenuState(items) {
+    return isVerifiedMenuState(items, pickNewestFullFlash);
+}
+
+function isDefaultArgonHighMenuState(items) {
+    return isVerifiedMenuState(items, pickNewestArgon);
 }
 
 /**
@@ -188,11 +310,6 @@ function selectedGeminiModelText(items) {
 const GEMINI_MODE_BUTTON_SELECTOR = '[data-test-id="bard-mode-menu-button"]';
 const GEMINI_MODEL_OPTION_SELECTOR =
     'gem-menu-item[data-mode-id], [data-test-id^="bard-mode-option-"]';
-
-// The thinking-level row belongs to the same menu but has no data-mode-id.
-// Keep it separate so model-menu proof still requires actual model options.
-const EXTENDED_THINKING_OPTION_SELECTOR =
-    'gem-menu-item:not([data-mode-id]):not([data-test-id^="bard-mode-option-"])';
 
 const MODEL_BUTTON_CACHE_KIND = 'gemini-model-button';
 const MODEL_BUTTON_CACHE_VERSION = 2;
@@ -275,10 +392,10 @@ const MODEL_BTN_CANDIDATES = [
 
 /** L3: Model-related keywords for heuristic button text/aria scanning. */
 const MODEL_KEYWORDS = [
-    'Pro', 'Flash', 'Thinking', 'Extended', 'Standard',
-    'Advanced', 'Fast',
-    '扩展', '延長', '延伸', '拡張', '思考', '模型', '模式', 'モデル',
-    '2.5', '3.0', '2.0', '3.5', '3.1', '3.6', '3.7',
+    'Pro', 'Flash', 'Argon', 'Thinking', 'Extended', 'Standard',
+    'Advanced', 'Fast', 'High',
+    '扩展', '延長', '延伸', '拡張', '思考', '模型', '模式', 'モデル', '高階',
+    '2.5', '3.0', '2.0', '3.5', '3.1', '3.6', '3.7', '3.8', '4',
 ];
 
 /** L3 + pre-click guard: common non-model buttons to skip outright. */
@@ -356,9 +473,9 @@ async function readAria(page, sel) {
 // text-filled items. Persisting that button poisoned the selector cache and let
 // default Flash requests silently run with the preselected Pro model.
 
-async function readVisibleGeminiModelMenuItems(page) {
+async function readVisibleMenuItems(page, selector) {
     try {
-        return await page.locator(GEMINI_MODEL_OPTION_SELECTOR).evaluateAll(els =>
+        return await page.locator(selector).evaluateAll(els =>
             els.filter(el => {
                 const rect = el.getBoundingClientRect();
                 const style = getComputedStyle(el);
@@ -377,75 +494,100 @@ async function readVisibleGeminiModelMenuItems(page) {
     } catch (_) { return []; }
 }
 
-async function readVisibleExtendedThinkingItems(page) {
-    try {
-        return await page.locator(EXTENDED_THINKING_OPTION_SELECTOR).evaluateAll(
-            (els, reData) => {
-                const re = new RegExp(reData.source, reData.flags);
-                return els.filter(el => {
-                    const rect = el.getBoundingClientRect();
-                    const style = getComputedStyle(el);
-                    const text = (el.innerText || el.textContent || '').trim();
-                    return rect.width > 0 && rect.height > 0
-                        && style.display !== 'none' && style.visibility !== 'hidden'
-                        && re.test(text);
-                }).map(el => ({
-                    text: (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' '),
-                    selected: el.classList.contains('selected')
-                        || !!el.querySelector('.selected, [aria-label*="已選取"], [aria-label*="Selected"]'),
-                    ariaSelected: el.getAttribute('aria-selected') || '',
-                    ariaChecked: el.getAttribute('aria-checked') || '',
-                }));
-            },
-            { source: EXTENDED_THINKING_RE.source, flags: EXTENDED_THINKING_RE.flags }
-        );
-    } catch (_) { return []; }
+async function readVisibleGeminiModelMenuItems(page) {
+    return readVisibleMenuItems(page, GEMINI_MODEL_OPTION_SELECTOR);
 }
 
+// Thinking-level rows have no data-mode-id, so model-menu proof stays on
+// GEMINI_MODEL_OPTION_SELECTOR. State/rank reads the broader menu selector.
 async function readVisibleGeminiMenuState(page) {
-    const [models, extended] = await Promise.all([
-        readVisibleGeminiModelMenuItems(page),
-        readVisibleExtendedThinkingItems(page),
-    ]);
-    return [...models, ...extended];
+    return readVisibleMenuItems(page, L.STATIC.menuItem);
 }
 
-async function findVisibleExtendedThinkingOption(page) {
-    const locator = page.locator(EXTENDED_THINKING_OPTION_SELECTOR).filter({
-        hasText: EXTENDED_THINKING_RE,
+async function isGeminiModelMenuOpen(page) {
+    const items = await readVisibleGeminiModelMenuItems(page);
+    return isGeminiModelMenuItems(items);
+}
+
+async function clickVisibleMenuItemByText(page, text) {
+    const want = normalizeMenuText(text);
+    if (!want) return false;
+    const index = await page.locator(L.STATIC.menuItem).evaluateAll((els, target) => {
+        for (let i = 0; i < els.length; i++) {
+            const el = els[i];
+            const rect = el.getBoundingClientRect();
+            const style = getComputedStyle(el);
+            if (rect.width <= 0 || rect.height <= 0
+                || style.display === 'none' || style.visibility === 'hidden') continue;
+            const t = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
+            if (t === target) return i;
+        }
+        return -1;
+    }, want).catch(() => -1);
+    if (index < 0) return false;
+    await page.locator(L.STATIC.menuItem).nth(index).click({ timeout: 3000 });
+    return true;
+}
+
+function logMenuSnapshot(log, snapshot) {
+    log('gemini DIAG: open menu items (high reasoning not found):');
+    snapshot.forEach((item, i) => {
+        log(`  [${i}] selected=${isSelectedGeminiModelItem(item)} mode="${item.dataModeId || ''}" text="${String(item.text || '').slice(0, 100)}"`);
     });
-    const count = await locator.count().catch(() => 0);
-    for (let index = 0; index < count; index++) {
-        const candidate = locator.nth(index);
-        if (await candidate.isVisible({ timeout: 300 }).catch(() => false)) return candidate;
-    }
-    return null;
 }
 
-async function ensureExtendedThinkingInOpenMenu(page, log) {
-    const state = await readVisibleGeminiMenuState(page);
-    const extended = state.find(item => isExtendedThinkingText(item && item.text));
-    if (!extended) {
-        log('gemini WARN: Extended Thinking item not found in verified model menu.');
-        return false;
+function markMenuItemSelected(items, target) {
+    const want = normalizeMenuText(target && target.text);
+    return (items || []).map(item => (
+        item && normalizeMenuText(item.text) === want
+            ? { ...item, selected: true }
+            : item
+    ));
+}
+
+async function ensureHighReasoningInOpenMenu(page, log) {
+    // Model options often fill before the thinking-level row. Poll the open
+    // menu instead of treating the first snapshot as proof of absence.
+    const deadline = Date.now() + 5000;
+    let lastState = [];
+    let expandedParent = false;
+    while (Date.now() < deadline) {
+        lastState = await readVisibleGeminiMenuState(page);
+        const preferred = pickPreferredHighReasoning(lastState);
+        if (preferred) {
+            if (isSelectedGeminiModelItem(preferred)) {
+                log(`gemini: high reasoning already selected ("${normalizeMenuText(preferred.text)}").`);
+                return lastState;
+            }
+            try {
+                if (!(await clickVisibleMenuItemByText(page, preferred.text))) {
+                    await page.waitForTimeout(200);
+                    continue;
+                }
+                log(`gemini: selected high reasoning ("${normalizeMenuText(preferred.text)}").`);
+                return markMenuItemSelected(lastState, preferred);
+            } catch (_) {
+                log('gemini WARN: high reasoning item not clickable.');
+                return null;
+            }
+        }
+        const parent = !expandedParent
+            && lastState.find(item => isThinkingParentText(item && item.text));
+        if (parent) {
+            try {
+                if (await clickVisibleMenuItemByText(page, parent.text)) {
+                    log('gemini: expanded thinking-level parent in model menu.');
+                    expandedParent = true;
+                    await page.waitForTimeout(400);
+                    continue;
+                }
+            } catch (_) { /* keep polling */ }
+        }
+        await page.waitForTimeout(200);
     }
-    if (isSelectedGeminiModelItem(extended)) {
-        log('gemini: Extended Thinking already selected.');
-        return true;
-    }
-    const option = await findVisibleExtendedThinkingOption(page);
-    if (!option) {
-        log('gemini WARN: Extended Thinking item not found for selection.');
-        return false;
-    }
-    try {
-        await option.click({ timeout: 3000 });
-        log('gemini: selected Extended Thinking.');
-        return true;
-    } catch (_) {
-        log('gemini WARN: Extended Thinking item not clickable.');
-        return false;
-    }
+    log('gemini WARN: high reasoning item not found in verified model menu.');
+    logMenuSnapshot(log, lastState);
+    return null;
 }
 
 /**
@@ -1042,19 +1184,20 @@ async function ensureProExtended(page, maxRetries = MAX_RETRIES, onLog) {
 }
 
 /**
- * Switch Gemini to the newest full Flash item in the live verified menu
- * plus Extended Thinking. Used as the default model and as the verified
- * fallback when Pro Extended is unavailable. Both independently selected
- * menu rows are required. Never Lite/Pro/Ultra or generic composer Flash.
- *
- * @param {Page} page — Playwright page on gemini.google.com
- * @param {(msg: string) => void} [onLog] — log callback
- * @returns {Promise<boolean>} true only when newest full Flash and Extended Thinking are active
+ * Shared verify-by-effect path: pick a model row in the live verified menu,
+ * independently select high reasoning, then reopen and prove both checked
+ * rows. Composer generic Argon/Flash aria is diagnostics only.
  */
-async function ensureFlash(page, onLog) {
+async function ensureVerifiedMenuModel(page, onLog, spec) {
     const log = onLog || (() => {});
+    const {
+        pick,
+        isVerifiedState,
+        labelOf,
+        fallbackLabel,
+        kind,
+    } = spec;
 
-    // Auto-detect locale if not yet set
     if (!L.locale) {
         const detected = await L.detectLocale(page);
         L.setLocale(detected);
@@ -1063,104 +1206,155 @@ async function ensureFlash(page, onLog) {
 
     await waitForAppReady(page, log);
 
-    // The composer only reports generic "Flash" / "Pro" text, which cannot
-    // distinguish a full Flash item from Flash-Lite. Always open the verified
-    // model menu and inspect its selected item before accepting the default.
+    // Composer only reports generic "Argon" / "Flash" / "Pro" text. Always
+    // open the verified model menu and inspect checked rows before sending.
     const peek = await peekModelButtonAria(page);
     if (peek) maybeCorrectLocale(peek.aria, log);
 
-    // Step 1: open the model menu (verify-by-effect discovery)
     const opened = await openModelMenu(page, log);
     if (!opened) {
-        log('gemini WARN: Model selector button not found for Flash switch (cache→L1→L2→L3 exhausted).');
+        log(`gemini WARN: Model selector button not found for ${kind} switch (cache→L1→L2→L3 exhausted).`);
         return false;
     }
 
     if (!(await waitForMenuItemsFilled(page))) {
-        log('gemini WARN: Menu items never filled for Flash switch.');
+        log(`gemini WARN: Menu items never filled for ${kind} switch.`);
         await page.keyboard.press('Escape').catch(() => {});
         return false;
     }
 
-    // Step 2: Select the newest full Flash item actually in this menu — do
-    // NOT fall back to Flash-Lite, Pro, Ultra, or a generic Flash label.
     const menuItems = await readVisibleGeminiModelMenuItems(page);
-    const target = pickNewestFullFlash(menuItems);
-    const chosenLabel = target ? flashMenuLabel(target) : DEFAULT_FLASH_MODEL.displayName;
+    const target = pick(menuItems);
+    const chosenLabel = target ? labelOf(target) : fallbackLabel;
     if (!target || !target.dataModeId) {
-        log(`gemini WARN: newest full Flash not found in verified model menu.`);
+        log(`gemini WARN: ${fallbackLabel} not found in verified model menu.`);
         await page.keyboard.press('Escape');
         return false;
     }
 
-    try {
-        await page.locator(`[data-mode-id="${target.dataModeId}"]`).first().click({ timeout: 3000 });
-        log(`gemini: selected target model "${chosenLabel}"`);
-    } catch {
-        log(`gemini WARN: target model "${chosenLabel}" not clickable.`);
-        await page.keyboard.press('Escape');
-        return false;
+    const alreadySelected = isSelectedGeminiModelItem(target);
+    if (alreadySelected) {
+        log(`gemini: "${chosenLabel}" already selected in verified menu.`);
+    } else {
+        try {
+            await page.locator(`[data-mode-id="${target.dataModeId}"]`).first().click({ timeout: 3000 });
+            log(`gemini: selected target model "${chosenLabel}"`);
+        } catch {
+            log(`gemini WARN: target model "${chosenLabel}" not clickable.`);
+            await page.keyboard.press('Escape');
+            return false;
+        }
     }
 
-    // Step 3: Reopen the verified model menu and ensure Extended Thinking is
-    // enabled for the chosen full Flash. Google exposes this as an independent
-    // selected menu row; selecting the model alone is not the default contract.
-    await page.waitForTimeout(750);
-    const thinkingMenu = await openModelMenu(page, log, { budgetMs: 12_000, maxClicks: 3 });
-    if (!thinkingMenu) {
-        log(`gemini WARN: could not reopen model menu to enable Extended Thinking for "${chosenLabel}".`);
-        return false;
+    // If Argon/Flash is already selected, the first open menu is still showing.
+    // Clicking the model button again toggles it closed, then the reasoning
+    // scan races an empty overlay. Stay on the open menu when it is still
+    // the verified Gemini model picker.
+    if (!alreadySelected || !isGeminiModelMenuItems(menuItems)) {
+        if (!(await isGeminiModelMenuOpen(page))) {
+            await page.waitForTimeout(750);
+            const thinkingMenu = await openModelMenu(page, log, { budgetMs: 12_000, maxClicks: 3 });
+            if (!thinkingMenu) {
+                log(`gemini WARN: could not reopen model menu to enable high reasoning for "${chosenLabel}".`);
+                return false;
+            }
+        }
     }
-    if (!(await ensureExtendedThinkingInOpenMenu(page, log))) {
+    if (!(await ensureHighReasoningInOpenMenu(page, log))) {
         await page.keyboard.press('Escape').catch(() => {});
         return false;
     }
     await page.keyboard.press('Escape').catch(() => {});
 
-    // Step 4: Reopen the verified menu and poll the TWO independent selected
-    // states. Composer aria "Flash 延伸思考" is useful diagnostics but cannot
-    // prove the exact newest full Flash; inspect the checked rows themselves.
     await page.waitForTimeout(750);
-    // Reopen verification can spend up to the selector candidate wait budget
-    // on a cold Angular toolbar, so do not give it a shorter outer deadline.
     const verifyDeadline = Date.now() + 12_000;
     let lastState = [];
     while (Date.now() < verifyDeadline) {
         const verificationMenu = await openModelMenu(page, log, { budgetMs: 10_000, maxClicks: 3 });
         if (!verificationMenu) break;
-        lastState = await readVisibleGeminiMenuState(page);
+        // Reopen often collapses 思考水平; expand again so High is visible
+        // as a checked row, not only the parent label.
+        lastState = await ensureHighReasoningInOpenMenu(page, log);
         await page.keyboard.press('Escape').catch(() => {});
-        if (isDefaultFlashExtendedMenuState(lastState)) {
-            log(`gemini: verified default state "${chosenLabel}" + Extended Thinking.`);
+        if (lastState && isVerifiedState(lastState)) {
+            log(`gemini: verified ${kind} state "${chosenLabel}" + high reasoning.`);
             return true;
         }
         await page.waitForTimeout(350);
     }
 
     const selectedText = selectedGeminiModelText(lastState);
-    const extendedSelected = lastState.some(item => isSelectedGeminiModelItem(item)
-        && isExtendedThinkingText(item && item.text));
-    log(`gemini: default state not confirmed. Model="${selectedText || 'UNKNOWN'}", Extended=${extendedSelected}.`);
+    const highSelected = isPreferredHighReasoningSelected(lastState);
+    log(`gemini: ${kind} state not confirmed. Model="${selectedText || 'UNKNOWN'}", HighReasoning=${highSelected}.`);
     return false;
 }
 
+/**
+ * Switch Gemini to the newest Argon item in the live verified menu plus
+ * high reasoning. This is the default model. Both independently selected
+ * menu rows are required. Never Flash/Pro/Ultra/Spark or generic composer Argon.
+ *
+ * @param {Page} page — Playwright page on gemini.google.com
+ * @param {(msg: string) => void} [onLog] — log callback
+ * @returns {Promise<boolean>} true only when newest Argon and high reasoning are active
+ */
+async function ensureArgon(page, onLog) {
+    return ensureVerifiedMenuModel(page, onLog, {
+        pick: pickNewestArgon,
+        isVerifiedState: isDefaultArgonHighMenuState,
+        labelOf: argonMenuLabel,
+        fallbackLabel: DEFAULT_ARGON_MODEL.displayName,
+        kind: 'Argon',
+    });
+}
+
+/**
+ * Switch Gemini to the newest full Flash item in the live verified menu
+ * plus high/extended reasoning. Opt-in via AGENTCHAT_GEMINI_MODEL=full-flash.
+ * Never Lite/Pro/Ultra or generic composer Flash.
+ *
+ * @param {Page} page — Playwright page on gemini.google.com
+ * @param {(msg: string) => void} [onLog] — log callback
+ * @returns {Promise<boolean>} true only when newest full Flash and high reasoning are active
+ */
+async function ensureFlash(page, onLog) {
+    return ensureVerifiedMenuModel(page, onLog, {
+        pick: pickNewestFullFlash,
+        isVerifiedState: isDefaultFlashExtendedMenuState,
+        labelOf: flashMenuLabel,
+        fallbackLabel: DEFAULT_FLASH_MODEL.displayName,
+        kind: 'Flash',
+    });
+}
+
 module.exports = {
+    DEFAULT_ARGON_MODEL,
     DEFAULT_FLASH_MODEL,
+    resolveGeminiModelChoice,
+    isDefaultArgonText,
+    isDefaultArgonItem,
+    pickNewestArgon,
+    parseArgonVersion,
+    argonMenuLabel,
+    isDefaultArgonHighMenuState,
     isDefaultFlashText,
     isDefaultFlashItem,
     pickNewestFullFlash,
     parseLeadingModelVersion,
     flashMenuLabel,
     isExtendedThinkingText,
+    isHighReasoningText,
+    isThinkingParentText,
     isDefaultFlashExtendedMenuState,
     isGeminiModelMenuItems,
     isProExtendedAria,
     isSelectedGeminiModelItem,
     selectedGeminiModelText,
     ensureProExtended,
+    ensureArgon,
     ensureFlash,
     waitForMenuItemsFilled,
-    // v10 exports (used by tests; adapter only needs the two ensure* above)
+    // v10 exports (used by tests; adapter uses ensureArgon / ensureFlash / ensureProExtended)
     openModelMenu,
     peekModelButtonAria,
     inferLocaleFromAria,

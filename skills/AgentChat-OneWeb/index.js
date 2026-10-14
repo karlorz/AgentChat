@@ -2,7 +2,7 @@
 /**
  * AI Fallback Chain — Multi-Provider CDP Bridge
  *
- * Priority chain: Gemini (newest full Flash in the live menu + Extended Thinking default) → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
+ * Priority chain: Gemini (newest Argon in the live menu + high reasoning default) → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
  * Falls to next provider on quota exhaustion or service unavailability.
  * Only ONE provider is used per invocation — first available wins.
  *

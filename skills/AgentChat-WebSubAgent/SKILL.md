@@ -70,7 +70,7 @@ mkdir -p ~/.agentchat && ln -sf /path/to/AgentChat/.env ~/.agentchat/.env
 | 步骤 | AI | 角色 | 必须内嵌的指令 |
 |------|-----|------|---------------|
 | 2 | Kimi | 联网检索 | `请进行联网搜索，用要点列出关键事实和数据。不要运行代码。` |
-| 3 | Gemini Pro | 深度推理 (条件) | `直接给出完整的分析。不需要搜索新资料，基于已有信息推理。` |
+| 3 | Gemini (newest Argon + high reasoning; shared OneWeb switcher) | 深度推理 (条件) | `直接给出完整的分析。不需要搜索新资料，基于已有信息推理。` |
 | 5 | ChatGPT | 交叉审查 | `请逐一审查以下内容，列出所有问题点并给出具体修改建议。不要重写整个方案。` |
 
 ## 复杂度判定 (Step 1)

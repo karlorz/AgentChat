@@ -29,6 +29,8 @@ const PROFILES = {
         thinking:        '思考等级',
         // Extended / 扩展思考 菜单项文本（v9 扁平菜单：直接点击）
         extended:        '扩展思考',
+        // High reasoning control on Argon (current Gemini UI; Extended is the same family)
+        high:            '高阶',
         // Standard 文本
         standard:        '标准',
         // 发送按钮
@@ -49,8 +51,9 @@ const PROFILES = {
         modelAria:       '開模式選擇器',
         modelVerify:     'Pro 延伸',   // v9: 新 UI 用「延伸」替代「延長」
         proDesc:         '進階',
-        thinking:        '思考程度',
+        thinking:        '思考水平',
         extended:        '延伸思考',   // v9 扁平菜单：直接点击项
+        high:            '高',         // live submenu: 「高 詳盡徹底」
         standard:        '標準',
         send:            '傳送',
         stop:            '停止',
@@ -65,6 +68,7 @@ const PROFILES = {
         proDesc:         'Advanced',
         thinking:        'Thinking',
         extended:        'Extended thinking',  // v9 flat menu
+        high:            'High',
         standard:        'Standard',
         send:            'Send',
         stop:            'Stop',
@@ -79,6 +83,7 @@ const PROFILES = {
         proDesc:         '高度な数学',
         thinking:        '思考レベル',
         extended:        '拡張思考',  // v9 flat menu
+        high:            '高',
         standard:        '標準',
         send:            '送信',
         stop:            '停止',
@@ -96,8 +101,9 @@ const FUZZY = {
     modelAria:    /打开模式选择器|開(?:啟)?模式(?:挑選|選擇)器|Model selector|モデルセレクターを開く/i,
     modelVerify:  /Pro\s*(扩展|延伸|延長|Extended|拡張)/i,
     proDesc:      /進階|进阶|高等数学|Advanced|高度な数学/i,
-    thinking:     /思考等级|思考程度|Thinking|Thought|思考レベル/i,
+    thinking:     /思考等级|思考程度|思考水平|思考水準|Thinking|Thought|思考レベル/i,
     extended:     /扩展思考|延伸思考|Extended thinking|拡張思考|扩展|延長|Extended|拡張/i,
+    high:         /高阶|高階|^高(?:\s|$)|詳盡徹底|High reasoning|\bHigh\b|高推理|高度思考/i,
     standard:     /标准|標準|Standard|標準/i,
     send:         /发送|傳送|Send|送信/i,
     stop:         /停止|Stop|停止/i,

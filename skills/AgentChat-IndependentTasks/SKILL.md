@@ -30,7 +30,7 @@ N 道独立任务，M 个能力等同的 AI（最多 7：gemini/chatgpt/qwen/kim
 
 3. **文件修改分级:**
    - **冻结（只读）**: `index.js`（编排层）、`AgentChat-OneWeb/index.js`（Provider 层）
-   - **共享库（改动需跨技能验证 + 全量测试）**: `lib/*.js`（含 `lib/plan.js`、`lib/execute.js`、`lib/locks.js` 等）
+   - **共享库（改动需跨技能验证 + 全量测试）**: `lib/*.js`（含 `lib/plan.js`、`lib/execute.js`、`lib/locks.js`、`lib/geminiModelSwitch.js` 等）。Gemini 派发走 OneWeb 同一套 switcher：默认 newest Argon + high reasoning，不是 Flash + Extended Thinking。
    - **可自由修改**: `SKILL.md`、`synthesize.js`、`validate_answers.js`、`md2pdf.sh`
 
 4. **失败分级降级协议。** 失败 = provider 超时/桥接失败/Step 2.5 答非所问。三级路径：

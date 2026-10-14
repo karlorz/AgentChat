@@ -2,11 +2,11 @@
  * Gemini provider adapter config.
  *
  * Key differences from standard pipeline:
- *   - Pro Extended Thinking activation (preInputHook), v36: Pro→verified
- *     newest-full-Flash + Extended Thinking fallback; the default path
- *     requires the independently verified newest full Flash item in the
- *     live menu plus Extended Thinking, and fails honestly rather than
- *     sending under a stale tab selection
+ *   - Model activation (preInputHook): default is verified newest Argon
+ *     plus high reasoning; Pro Extended is opt-in with Argon fallback;
+ *     full-flash is opt-in. Fails honestly rather than sending under a
+ *     stale tab selection. Legacy AGENTCHAT_GEMINI_MODEL=flash aliases
+ *     to Argon so it cannot keep forcing Flash + Extended Thinking.
  *   - Bursty output detection (stillGeneratingCheck) — resets stability clock
  *     when Pro Extended pauses mid-reasoning for 6s+
  *   - Action Toolbar completion anchor — Copy/Good-response buttons = definitive "done"
@@ -21,20 +21,25 @@
  *     (RESPONSE_SELECTOR) + dual-draft panels ("选项 A/B") resolved to draft A
  *     in postResponseHook (extractFirstDraft) — drafts are NEVER concatenated
  *
- * Dependencies: lib/geminiModelSwitch.js (ensureProExtended), lib/providerFactory.js (input helpers)
+ * Dependencies: lib/geminiModelSwitch.js (ensureArgon / ensureFlash / ensureProExtended), lib/providerFactory.js (input helpers)
  */
 
 const { IN_PAGE_TEXT_WITH_MATH, effectiveMinResponseLength } = require('../../providerFactory');
-const { ensureProExtended, ensureFlash } = require('../../geminiModelSwitch');
+const {
+    ensureProExtended, ensureArgon, ensureFlash, resolveGeminiModelChoice,
+} = require('../../geminiModelSwitch');
 const { log: _tlog } = require('../../terminal');
 
 // Default logger — the factory calls preInputHook(page, C) with no third arg,
 // so the old `logFn || (() => {})` default silently swallowed every model
-// activation log line, making Pro/Flash switching impossible to debug.
+// activation log line, making Pro/Argon switching impossible to debug.
 const glog = (msg) => _tlog('gemini', msg);
-const getModelChoice = () => String(process.env.AGENTCHAT_GEMINI_MODEL || 'flash')
-    .trim().toLowerCase();
+const getModelChoice = () => resolveGeminiModelChoice();
 const isProChoice = () => getModelChoice() === 'pro';
+const usesLongReasoning = () => {
+    const choice = getModelChoice();
+    return choice === 'pro' || choice === 'argon';
+};
 
 // ── Helpers (replicated from OneWeb for self-contained adapter) ──
 
@@ -78,7 +83,7 @@ let _preGenStreak = 0;
 // v32: Pro Extended thinking can produce only thinking-status text for 60-180s.
 // The default 8-poll (~16s) cap would prematurely declare "done" mid-thinking.
 // Raise to 90 polls (~180s) when Pro mode is active, matching the raised budget.
-const MAX_PREGEN_STREAK = isProChoice() ? 90 : 8;
+const MAX_PREGEN_STREAK = usesLongReasoning() ? 90 : 8;
 
 function looksLikePreGeneration(text) {
     const trimmed = (text || '').trim();
@@ -248,10 +253,11 @@ module.exports = {
     url: 'https://gemini.google.com/u/0/app',
     authDomains: ['accounts.google.com'],
 
-    // v32: Pro Extended thinking + web search can take 3-5 min. The default
-    // per-provider budget (180s) is exhausted mid-thinking → empty reply.
-    // Raise to 360s when Pro mode is active; Flash stays at the default.
-    providerTimeoutOverride: isProChoice() ? 360_000 : undefined,
+    // Argon high reasoning and Pro Extended can think for minutes. The
+    // default per-provider budget (180s) is exhausted mid-thinking → empty
+    // reply. Raise to 360s for those paths; explicit full-flash stays at
+    // the default.
+    providerTimeoutOverride: usesLongReasoning() ? 360_000 : undefined,
 
     // Post-nav URL allow-list — replaces the imperative ERR_WRONG_PAGE check
     // that lived in preInputHook (where it classified as generic 'error' →
@@ -285,7 +291,7 @@ module.exports = {
         /已達到.*(?:上限|限額|限制)/i,
     ],
 
-    // ── Pre-input: model activation (Flash default; Pro Extended opt-in) ──
+    // ── Pre-input: model activation (Argon+high default; Pro / full-flash opt-in) ──
     preInputHook: async (page, cfg, logFn) => {
         const log = logFn || glog;
         // Per-run reset: _preGenStreak is module-level state. In a long-lived
@@ -296,30 +302,44 @@ module.exports = {
         // (URL validation moved to the factory's Step-2 auth check via
         //  blockedUrlPatterns — a wrong page is now 'auth', not 'error'.)
 
-        // v32: Flash is the DEFAULT model (free tier, faster). Pro Extended
-        // Thinking is opt-in via AGENTCHAT_GEMINI_MODEL=pro (requires
-        // subscription, 3-5 min generation for complex prompts).
+        // Newest Argon + high reasoning is the DEFAULT. Pro Extended Thinking
+        // is opt-in via AGENTCHAT_GEMINI_MODEL=pro. Newest full Flash is
+        // opt-in via AGENTCHAT_GEMINI_MODEL=full-flash. Legacy `flash` is an
+        // alias of the Argon default so it cannot fight this contract.
         const modelChoice = getModelChoice();
         const usingPro = modelChoice === 'pro';
+        const usingFullFlash = modelChoice === 'full-flash';
 
         if (usingPro) {
             // Pro path: try Pro Extended first, then the verified default:
-            // newest full Flash in the live menu plus Extended Thinking.
-            // We never substitute Flash-Lite or an arbitrary active model.
+            // newest Argon in the live menu plus high reasoning.
+            // We never substitute Flash, Flash-Lite, or an arbitrary active model.
             if (await ensureProExtended(page, 1, log)) {
                 log('gemini: Pro Extended Thinking active (Pro subscription)');
                 if (cfg) cfg.model_used = 'Pro Extended';
                 return;
             }
-            log('gemini: Pro Extended unavailable, falling back to verified newest full Flash...');
+            log('gemini: Pro Extended unavailable, falling back to verified newest Argon + high reasoning...');
         }
 
-        // Flash path (default): newest full Flash + Extended Thinking only.
+        if (usingFullFlash) {
+            if (await ensureFlash(page, log)) {
+                log('gemini: newest full Flash + high reasoning active (full-flash opt-in)');
+                if (cfg) cfg.model_used = 'Flash';
+                return;
+            }
+            throw Object.assign(
+                new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest full Flash + high reasoning`),
+                { code: 'ERR_MODEL_DEGRADED' }
+            );
+        }
+
+        // Default / Pro-fallback path: newest Argon + high reasoning only.
         // A model-picker failure must not silently send under an existing
-        // Pro or Flash-Lite selection on a reused tab.
-        if (await ensureFlash(page, log)) {
-            log(`gemini: newest full Flash + Extended Thinking active (${usingPro ? 'Pro fallback' : 'default'})`);
-            if (cfg) cfg.model_used = 'Flash';
+        // Flash, Pro, or Spark selection on a reused tab.
+        if (await ensureArgon(page, log)) {
+            log(`gemini: newest Argon + high reasoning active (${usingPro ? 'Pro fallback' : 'default'})`);
+            if (cfg) cfg.model_used = 'Argon';
             return;
         }
 
@@ -328,7 +348,7 @@ module.exports = {
         // misleading Gemini answer produced by whichever model was already on
         // the page.
         throw Object.assign(
-            new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest full Flash + Extended Thinking`),
+            new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest Argon + high reasoning`),
             { code: 'ERR_MODEL_DEGRADED' }
         );
     },

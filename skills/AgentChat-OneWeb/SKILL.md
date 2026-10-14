@@ -279,7 +279,7 @@ Conversation URLs are transient recovery data. They may appear in the immediate 
 
 ```
 Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
-(newest full Flash + Extended Thinking default)                    (last resort)
+(newest Argon + high reasoning default)                            (last resort)
 ```
 
 First available provider wins. Each step falls through ONLY on confirmed unavailability (quota/auth/model-degraded), never on transient network errors.
@@ -297,11 +297,12 @@ First available provider wins. Each step falls through ONLY on confirmed unavail
 | **L3: 模型质量** | Pro/高级模型是否可用 | Gemini 特有，其他 provider 跳过 |
 
 ### Gemini 特殊处理
-Gemini 默认使用并**必须验证选中当前菜单里最新的完整 Flash（newest full Flash，非 Lite/Pro/Ultra，亦非泛型 composer「Flash」）及 `延伸思考`**（免费 tier，速度快）；`Flash-Lite`、`Pro`、`Ultra`、标准思考与任何复用 tab 上的既有状态都不满足默认契约。不再硬钉字面 `3.6 Flash`——菜单里实际有的最新完整 Flash 才是默认。如需 Pro 模型，设 `AGENTCHAT_GEMINI_MODEL=pro` 启用 **Pro Extended Thinking**（需 Gemini Pro 订阅，3-5 分钟生成）。
-模型激活策略（v36+；v34 的 3.6 钉死已被取代）：
-1. **newest full Flash + Extended Thinking**（默认，`AGENTCHAT_GEMINI_MODEL=flash` 或未设）— 仅在 Gemini 已验证菜单中确认「最新完整 Flash」与「延伸思考」两项均勾选后发送 prompt
-2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **newest full Flash + Extended Thinking**
-3. 无法选择或验证这两个默认状态 → Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Pro / Flash-Lite / Ultra / 标准思考 / 页面现有模型冒充默认 Flash
+Gemini 默认使用并**必须验证选中当前菜单里最新的 Argon（newest Argon，非 Flash/Lite/Pro/Ultra/Spark，亦非泛型 composer「Argon」）及高推理（high reasoning：当前 UI 的 High / 高階 / 延伸思考 同类控件）**。`Flash`、`Flash-Lite`、`Pro`、`Ultra`、`Spark`、标准思考与任何复用 tab 上的既有状态都不满足默认契约。不要硬钉字面 `4 Argon`——菜单里实际有的最新 Argon 才是默认。遗留的 `AGENTCHAT_GEMINI_MODEL=flash` **不会**继续强迫 Flash + 延伸思考，而是别名到 Argon 默认。
+模型激活策略（2026-10-14；v36 的 newest-full-Flash 默认已被取代）：
+1. **newest Argon + high reasoning**（默认，未设 / `argon` / 遗留 `flash`）— 仅在 Gemini 已验证菜单中确认「最新 Argon」与「高推理」两项均勾选后发送 prompt
+2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **newest Argon + high reasoning**
+3. **newest full Flash + high reasoning**（`AGENTCHAT_GEMINI_MODEL=full-flash`）— 显式 opt-in，仅当菜单里仍有完整 Flash
+4. 无法选择或验证请求的状态 → Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Flash / Pro / Spark / 标准思考 / 页面现有模型冒充默认 Argon。Composer 上泛型「Argon」「Flash」aria 只是诊断，不能代替两条已选菜单行的验证。
 
 降级触发条件由各 adapter 的 `quotaPatterns` 定义（`lib/providers/adapters/<name>.js`），
 是权威来源。SKILL.md 不再维护第二份副本（过去已出现与代码不一致的漂移）。
@@ -450,7 +451,7 @@ Python SDK (`agentchat/session.py`) parses `AGENTCHAT_STATE` (then the receipt).
   "checked_at": "2026-10-11T00:00:00.000Z",
   "provider_used": "Gemini",
   "fallback_chain": ["gemini"],
-  "model_used": "Flash",
+  "model_used": "Argon",
   "total_ms": 1500,
   "exit": 0,
   "run_id": "ac-xxxxxxxxxxxx"
@@ -520,7 +521,7 @@ index.js
    失败后关闭当前 tab，为下一个 provider 创建新 tab。
 3. **Quota detection via DOM** — 不依赖 HTTP 状态码，而是检查页面 DOM 内容判断是否被限流。
 4. **No cross-provider context** — 不对不同 provider 之间传递上下文。每次都是独立的 prompt。
-5. **Verified newest full Flash + Extended Thinking default, Pro Extended opt-in** — Gemini 默认必须在已验证模型菜单中确认 **当前最新的完整 Flash** 与 **`延伸思考`** 都已选中（不钉死 3.6）；无法验证任一项则本 provider 失败并降级，绝不使用 Flash-Lite、Pro、Ultra 或标准思考伪装成功。Pro Extended Thinking 通过 `AGENTCHAT_GEMINI_MODEL=pro` 显式启用（v36+）。
+5. **Verified newest Argon + high reasoning default; Pro / full-flash opt-in** — Gemini 默认必须在已验证模型菜单中确认 **当前最新的 Argon** 与 **高推理** 都已选中（不钉死 4）；无法验证任一项则本 provider 失败并降级，绝不使用 Flash、Pro、Spark 或标准思考伪装成功。遗留 `AGENTCHAT_GEMINI_MODEL=flash` 别名到 Argon。Pro Extended 通过 `AGENTCHAT_GEMINI_MODEL=pro` 显式启用；完整 Flash 通过 `full-flash` 显式启用。
 
 ---
 
@@ -530,7 +531,7 @@ index.js
 
 | Provider | 关键差异 | 详见 |
 |----------|---------|------|
-| **Gemini** | 默认严格选中并复开菜单验证 **菜单内最新完整 Flash + `延伸思考`**（不钉 3.6）；Pro Extended opt-in (`AGENTCHAT_GEMINI_MODEL=pro`)、bursty 输出检测、120s stop-btn 延长、Action Toolbar 完成锚点、搜索→回答间隙 grace re-read | `adapters/gemini.js` |
+| **Gemini** | 默认严格选中并复开菜单验证 **菜单内最新 Argon + 高推理**（不钉 4；Composer 泛型 Argon/Flash aria 不是证明）；Pro Extended opt-in (`AGENTCHAT_GEMINI_MODEL=pro`)、完整 Flash opt-in (`full-flash`)、bursty 输出检测、120s stop-btn 延长、Action Toolbar 完成锚点、搜索→回答间隙 grace re-read | `adapters/gemini.js` |
 | **ChatGPT** | 3 层输入策略 (clipboard→simulated paste→chunked keyboard)、React 发送按钮状态验证 | `adapters/chatgpt.js` |
 | **Claude** | ProseMirror 编辑器、"Thinking" 占位符过滤、嵌入搜索块剥离 | `adapters/claude.js` |
 | **Qwen** | React SPA 3s 延迟、stop-btn detached 模式、模型名前缀剥离 | `adapters/qwen.js` |

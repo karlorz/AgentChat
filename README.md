@@ -129,7 +129,7 @@ AgentChat/
     │   ├── terminal.js                    #   终端 spinner + 计时器
     │   ├── telemetry.js                   #   遥测日志轮转
     │   ├── locks.js                       #   文件锁（mkdir 原子性，provider 互斥）
-    │   ├── geminiModelSwitch.js           #   Gemini Pro Extended / Flash 模型切换
+    │   ├── geminiModelSwitch.js           #   Gemini Argon + high reasoning / Pro / Flash 模型切换
     │   ├── prompts.js                     #   DAG 拆解 prompt 模板
     │   └── providers/
     │       ├── chain.js                   #   Provider 优先级链（单一真相源）
