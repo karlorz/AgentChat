@@ -7,6 +7,10 @@
  *     full-flash is opt-in. Fails honestly rather than sending under a
  *     stale tab selection. Legacy AGENTCHAT_GEMINI_MODEL=flash aliases
  *     to Argon so it cannot keep forcing Flash + Extended Thinking.
+ *   - Composer mode (preInputHook, after model verify): default Task
+ *     (任務) so custom MCP / connectors bind; Chat (對話) is opt-in via
+ *     AGENTCHAT_GEMINI_COMPOSER_MODE=chat. Unverified mode fail-closes
+ *     with ERR_MODEL_DEGRADED.
  *   - Bursty output detection (stillGeneratingCheck) — resets stability clock
  *     when Pro Extended pauses mid-reasoning for 6s+
  *   - Action Toolbar completion anchor — Copy/Good-response buttons = definitive "done"
@@ -28,6 +32,9 @@ const { IN_PAGE_TEXT_WITH_MATH, effectiveMinResponseLength } = require('../../pr
 const {
     ensureProExtended, ensureArgon, ensureFlash, resolveGeminiModelChoice,
 } = require('../../geminiModelSwitch');
+const {
+    ensureComposerMode, resolveGeminiComposerMode,
+} = require('../../geminiComposerMode');
 const { log: _tlog } = require('../../terminal');
 
 // Default logger — the factory calls preInputHook(page, C) with no third arg,
@@ -310,47 +317,60 @@ module.exports = {
         const usingPro = modelChoice === 'pro';
         const usingFullFlash = modelChoice === 'full-flash';
 
+        const activateComposerOrFail = async () => {
+            const composerChoice = resolveGeminiComposerMode();
+            if (await ensureComposerMode(page, log, composerChoice)) {
+                if (cfg) cfg.composer_mode = composerChoice;
+                return;
+            }
+            throw Object.assign(
+                new Error(`Gemini composer mode could not be verified — requested=${composerChoice}`),
+                { code: 'ERR_MODEL_DEGRADED' }
+            );
+        };
+
+        let modelUsed;
         if (usingPro) {
             // Pro path: try Pro Extended first, then the verified default:
             // newest Argon in the live menu plus high reasoning.
             // We never substitute Flash, Flash-Lite, or an arbitrary active model.
             if (await ensureProExtended(page, 1, log)) {
                 log('gemini: Pro Extended Thinking active (Pro subscription)');
-                if (cfg) cfg.model_used = 'Pro Extended';
-                return;
+                modelUsed = 'Pro Extended';
+            } else {
+                log('gemini: Pro Extended unavailable, falling back to verified newest Argon + high reasoning...');
             }
-            log('gemini: Pro Extended unavailable, falling back to verified newest Argon + high reasoning...');
         }
 
-        if (usingFullFlash) {
+        if (!modelUsed && usingFullFlash) {
             if (await ensureFlash(page, log)) {
                 log('gemini: newest full Flash + high reasoning active (full-flash opt-in)');
-                if (cfg) cfg.model_used = 'Flash';
-                return;
+                modelUsed = 'Flash';
+            } else {
+                throw Object.assign(
+                    new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest full Flash + high reasoning`),
+                    { code: 'ERR_MODEL_DEGRADED' }
+                );
             }
-            throw Object.assign(
-                new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest full Flash + high reasoning`),
-                { code: 'ERR_MODEL_DEGRADED' }
-            );
         }
 
-        // Default / Pro-fallback path: newest Argon + high reasoning only.
-        // A model-picker failure must not silently send under an existing
-        // Flash, Pro, or Spark selection on a reused tab.
-        if (await ensureArgon(page, log)) {
-            log(`gemini: newest Argon + high reasoning active (${usingPro ? 'Pro fallback' : 'default'})`);
-            if (cfg) cfg.model_used = 'Argon';
-            return;
+        if (!modelUsed) {
+            // Default / Pro-fallback path: newest Argon + high reasoning only.
+            // A model-picker failure must not silently send under an existing
+            // Flash, Pro, or Spark selection on a reused tab.
+            if (await ensureArgon(page, log)) {
+                log(`gemini: newest Argon + high reasoning active (${usingPro ? 'Pro fallback' : 'default'})`);
+                modelUsed = 'Argon';
+            } else {
+                throw Object.assign(
+                    new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest Argon + high reasoning`),
+                    { code: 'ERR_MODEL_DEGRADED' }
+                );
+            }
         }
 
-        // Exact requested model could not be verified. Failing cleanly lets
-        // OneWeb's normal provider chain continue, instead of returning a
-        // misleading Gemini answer produced by whichever model was already on
-        // the page.
-        throw Object.assign(
-            new Error(`Gemini required model could not be verified — requested=${modelChoice}, target=newest Argon + high reasoning`),
-            { code: 'ERR_MODEL_DEGRADED' }
-        );
+        if (cfg) cfg.model_used = modelUsed;
+        return activateComposerOrFail();
     },
 
     // ── Editor ──

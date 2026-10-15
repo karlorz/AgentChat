@@ -302,7 +302,8 @@ Gemini 默认使用并**必须验证选中当前菜单里最新的 Argon（newes
 1. **newest Argon + high reasoning**（默认，未设 / `argon` / 遗留 `flash`）— 仅在 Gemini 已验证菜单中确认「最新 Argon」与「高推理」两项均勾选后发送 prompt
 2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **newest Argon + high reasoning**
 3. **newest full Flash + high reasoning**（`AGENTCHAT_GEMINI_MODEL=full-flash`）— 显式 opt-in，仅当菜单里仍有完整 Flash
-4. 无法选择或验证请求的状态 → Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Flash / Pro / Spark / 标准思考 / 页面现有模型冒充默认 Argon。Composer 上泛型「Argon」「Flash」aria 只是诊断，不能代替两条已选菜单行的验证。
+4. **Composer 任務 (default)** — `AGENTCHAT_GEMINI_COMPOSER_MODE` 未设或为 `task` 时，模型验证之后必须点选并验证输入框下方的 **任務 / Task** chip（自定义 MCP / @ 连接器只在此模式绑定）。`chat`（對話 / Chat）为显式 opt-in。
+5. 无法选择或验证请求的状态（模型或 composer 模式）→ Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Flash / Pro / Spark / 标准思考 / 页面现有模型冒充默认 Argon，也绝不以未验证的 對話 chip 冒充 任務。Composer 上泛型「Argon」「Flash」aria 只是诊断，不能代替两条已选菜单行的验证。
 
 降级触发条件由各 adapter 的 `quotaPatterns` 定义（`lib/providers/adapters/<name>.js`），
 是权威来源。SKILL.md 不再维护第二份副本（过去已出现与代码不一致的漂移）。

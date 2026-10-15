@@ -1,5 +1,10 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-10-15 — Gemini composer Task vs Chat
+- **[P0] Composer mode (`geminiComposerMode.js`)**: live Gemini under the input is a 對話/任務 (Chat/Task) segmented pair. Custom MCP / @ chips bind in **任務**, not 對話. Default `AGENTCHAT_GEMINI_COMPOSER_MODE=task`; `chat` is explicit opt-in. Verify-by-effect: both chips present, requested chip exclusively selected (ancestor `selected` class or group `--gem-active-index`). Do not pin `gem-segmented-button-*` as identity. Fail-closes `ERR_MODEL_DEGRADED` if the requested chip cannot be verified, same as a model-picker miss.
+- **[P0] Adapter**: `preInputHook` runs `ensureComposerMode` after the verified Argon/Pro/full-flash path.
+- **[docs/test]** locales `composerChat`/`composerTask` for zh_CN, zh_TW, en, ja; `.env.example`; `test_gemini_composer_mode.js`.
+
 ## 2026-10-14 — Gemini default is newest Argon + high reasoning
 - **[P0] Live follow-up (`geminiModelSwitch.js`)**: receipt `ac-6acee57714b5d172011de08a` selected **4 Argon** then fail-closed because the high-reasoning scan ran on a just-toggled menu before thinking rows filled. Stay on the already-open verified menu (do not click the picker again), poll up to 5s for high-reasoning text, expand a thinking-level parent if present, and dump visible menu rows on miss. Live dump `ac-6aceeb7846fcc0f8d180d658` showed the parent label is **思考水平** (not 思考程度). Receipt `ac-6aceebb5efa25010f590ada0` expanded that parent: High is **高 詳盡徹底** (Low **低 快捷高效** was still selected). Match `高 …` / 詳盡徹底, reject Low/Medium, and re-expand the parent on verify so the checked High row is visible.
 - **[P0] Argon default (`geminiModelSwitch.js`)**: Live Gemini web composer (2026-10-14) exposes **Argon**, not newest full Flash + a Flash-era 延伸思考 row. Default now selects the **newest Argon item in the verified model menu** (no pinned version string) plus the current **high reasoning** control (High / 高階 / Extended Thinking family). Composer generic "Argon"/"Flash" aria is diagnostics only; checked menu rows are the proof. Reused tabs that are not verified latest Argon + high reasoning fail `ERR_MODEL_DEGRADED` instead of sending.

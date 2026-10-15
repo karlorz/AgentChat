@@ -43,6 +43,9 @@ const PROFILES = {
         good:            '好答案',
         // Flash-Lite 描述
         flashLiteDesc:   '极速回答',
+        // Composer 对话 vs 任务 chips under the input (custom MCP lives in 任务)
+        composerChat:    '对话',
+        composerTask:    '任务',
     },
 
     zh_TW: {
@@ -60,6 +63,9 @@ const PROFILES = {
         copy:            '複製',
         good:            '好答案',
         flashLiteDesc:   '極速回答',
+        // Live zh-HK/zh-TW 2026-10-15: 「對話」「任務」 under the composer
+        composerChat:    '對話',
+        composerTask:    '任務',
     },
 
     en: {
@@ -75,6 +81,8 @@ const PROFILES = {
         copy:            'Copy',
         good:            'Good response',
         flashLiteDesc:   'Fast answers',
+        composerChat:    'Chat',
+        composerTask:    'Task',
     },
 
     ja: {
@@ -90,6 +98,8 @@ const PROFILES = {
         copy:            'コピー',
         good:            '良い回答',
         flashLiteDesc:   '高速回答',
+        composerChat:    'チャット',
+        composerTask:    'タスク',
     },
 };
 
