@@ -10,7 +10,13 @@
  *   - Composer mode (preInputHook, after model verify): default Task
  *     (任務) so custom MCP / connectors bind; Chat (對話) is opt-in via
  *     AGENTCHAT_GEMINI_COMPOSER_MODE=chat. Unverified mode fail-closes
- *     with ERR_MODEL_DEGRADED.
+ *     with ERR_MODEL_DEGRADED. After Task, classify top-level @
+ *     connectors vs inner WebCodex projects (GrokSearch, trends).
+ *   - Task-mode mention (custom input, after fill clear): insert
+ *     `@Webcodex Local Projects` then keyboard-append the prompt.
+ *     Factory/Gemini fill() would wipe the chip. Fail-closes
+ *     ERR_MODEL_DEGRADED when Task cannot verify the mention.
+ *     AGENTCHAT_GEMINI_NO_MCP_MENTION=1 opts out.
  *   - Bursty output detection (stillGeneratingCheck) — resets stability clock
  *     when Pro Extended pauses mid-reasoning for 6s+
  *   - Action Toolbar completion anchor — Copy/Good-response buttons = definitive "done"
@@ -25,7 +31,7 @@
  *     (RESPONSE_SELECTOR) + dual-draft panels ("选项 A/B") resolved to draft A
  *     in postResponseHook (extractFirstDraft) — drafts are NEVER concatenated
  *
- * Dependencies: lib/geminiModelSwitch.js (ensureArgon / ensureFlash / ensureProExtended), lib/providerFactory.js (input helpers)
+ * Dependencies: lib/geminiModelSwitch.js (ensureArgon / ensureFlash / ensureProExtended), lib/geminiComposerMode.js, lib/geminiMcpLayers.js, lib/providerFactory.js (input helpers)
  */
 
 const { IN_PAGE_TEXT_WITH_MATH, effectiveMinResponseLength } = require('../../providerFactory');
@@ -35,6 +41,11 @@ const {
 const {
     ensureComposerMode, resolveGeminiComposerMode,
 } = require('../../geminiComposerMode');
+const {
+    readComposerMcpLayers, logMcpLayers,
+    isGeminiMcpMentionDisabled, ensureGeminiWebcodexMention,
+    placeCaretAfterGeminiMention,
+} = require('../../geminiMcpLayers');
 const { log: _tlog } = require('../../terminal');
 
 // Default logger — the factory calls preInputHook(page, C) with no third arg,
@@ -321,6 +332,14 @@ module.exports = {
             const composerChoice = resolveGeminiComposerMode();
             if (await ensureComposerMode(page, log, composerChoice)) {
                 if (cfg) cfg.composer_mode = composerChoice;
+                if (composerChoice === 'task') {
+                    const layers = await readComposerMcpLayers(page);
+                    logMcpLayers(log, layers);
+                    if (cfg) {
+                        cfg.mcp_connectors = layers.connectors.map(row => row.id);
+                        cfg.mcp_inner_projects = layers.innerProjects.map(row => row.id);
+                    }
+                }
                 return;
             }
             throw Object.assign(
@@ -480,12 +499,11 @@ module.exports = {
         return looksLikePreGeneration(text);
     },
 
-    // ── Input: Angular-specific (fill() for clear, dispatchEvent for CD) ──
-    // v22 CONCURRENCY FIX: system clipboard is a single OS-wide resource — concurrent
-    // workers race on it. Keyboard insertText (CDP Input.insertText, target-scoped)
-    // is the primary path; system clipboard is the LAST resort, used only when
-    // keyboard fails. Gemini's Quill/Angular editor doesn't reliably consume
-    // synthetic ClipboardEvents, so we skip the simulated-paste tier.
+    // ── Input: Angular-specific (fill() for clear, then mention + keyboard) ──
+    // Factory clearEditor + this fill('') run BEFORE the mention. ChatGPT's
+    // @Web search pattern: mention after clear, then keyboard-append so
+    // paste-replace cannot wipe the chip. Clipboard fallback must not fill
+    // again once the WebCodex mention is in the composer.
     input: async (page, editor, prompt) => {
         // Clear — try fill() first for Angular/Quill compatibility
         try { await editor.fill(''); } catch {
@@ -494,25 +512,39 @@ module.exports = {
         }
         await page.waitForTimeout(100);
 
+        const mentionNeeded = resolveGeminiComposerMode() === 'task'
+            && !isGeminiMcpMentionDisabled();
+        if (mentionNeeded) {
+            const mention = await ensureGeminiWebcodexMention(page, glog);
+            if (mention !== 'already-on' && mention !== 'clicked') {
+                throw Object.assign(
+                    new Error(`Gemini required @Webcodex Local Projects mention could not be verified — status=${mention}`),
+                    { code: 'ERR_MODEL_DEGRADED' }
+                );
+            }
+            await placeCaretAfterGeminiMention(page);
+        }
+
+        const text = mentionNeeded && !/^\s/.test(prompt) ? ` ${prompt}` : prompt;
+
         // Input text
-        if (prompt.length > INSERT_TEXT_LIMIT) {
+        if (text.length > INSERT_TEXT_LIMIT) {
             // Tier 1: chunked keyboard — CDP Input.insertText, target-scoped, safe.
-            for (let i = 0; i < prompt.length; i += 150) {
-                await page.keyboard.insertText(prompt.substring(i, i + 150));
+            for (let i = 0; i < text.length; i += 150) {
+                await page.keyboard.insertText(text.substring(i, i + 150));
                 await page.waitForTimeout(40);
             }
             let landed = await editor.evaluate(el =>
                 (el.innerText || el.textContent || '').length
             ).catch(() => 0) > prompt.length * 0.8;
 
-            // Tier 2 (LAST RESORT): system clipboard. Racy under concurrency;
-            // the composer readback check catches cross-talk when it occurs.
-            if (!landed) {
+            // Tier 2 (LAST RESORT): system clipboard. Skip after a mention
+            // chip — fill('') would wipe @Webcodex Local Projects.
+            if (!landed && !mentionNeeded) {
                 let clipOk = true;
-                try { await page.evaluate(t => navigator.clipboard.writeText(t), prompt); }
+                try { await page.evaluate(t => navigator.clipboard.writeText(t), text); }
                 catch (_) { clipOk = false; }
                 if (clipOk) {
-                    // Clear failed keyboard content first
                     try { await editor.fill(''); } catch {
                         await page.keyboard.press('ControlOrMeta+a');
                         await page.keyboard.press('Backspace');
@@ -526,7 +558,7 @@ module.exports = {
                 }
             }
         } else {
-            await page.keyboard.insertText(prompt);
+            await page.keyboard.insertText(text);
         }
 
         // Trigger Angular zone.js change detection

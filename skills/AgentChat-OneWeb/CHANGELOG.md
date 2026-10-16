@@ -1,5 +1,13 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-10-15 — Gemini required `@Webcodex Local Projects`
+- **[P0] Mention after Task (`geminiMcpLayers.js` + Gemini `input`)**: live Gemini chat `13e5344e1cc51b40` stayed on Task + Argon but searched Drive/Gmail/VM because the composer had no `@Webcodex Local Projects` chip. Task mode now types `@Webcodex` (not bare `@`, so Avatar/Skills are not first), clicks only the WebCodex Local Projects menuitem, verifies the chip, then keyboard-appends the prompt. Factory/Gemini `fill('')` still runs first and would wipe a preInput mention. Do not pick SkillWiki, GrokSearch, or trends. Do not Enter the first built-in row. Leftover `@Webcodex` is Escape+Backspace on miss. Fail-closes `ERR_MODEL_DEGRADED`. Opt-out `AGENTCHAT_GEMINI_NO_MCP_MENTION=1`.
+- **[test]** mention picker + adapter fill-then-mention contract in `test_gemini_mcp_layers.js`.
+
+## 2026-10-15 — Gemini MCP connector vs inner project
+- **[P1] Two-layer names (`geminiMcpLayers.js`)**: live Gemini/ChatGPT tables listed `GrokSearch` and `trends` as if they were extra `@` connectors. They are **inner projects/servers inside WebCodex Local Projects**. Top-level `@` chips are WebCodex Local Projects and SkillWiki only. After Task verify, the adapter scans composer chips, logs both layers, and stores `cfg.mcp_connectors` / `cfg.mcp_inner_projects`. Receipt `ac-6ad07d99292fadac24fa2cc0` (ephemeral Task tab) confirmed the split.
+- **[test]** `test_gemini_mcp_layers.js`.
+
 ## 2026-10-15 — Gemini composer Task vs Chat
 - **[P0] Composer mode (`geminiComposerMode.js`)**: live Gemini under the input is a 對話/任務 (Chat/Task) segmented pair. Custom MCP / @ chips bind in **任務**, not 對話. Default `AGENTCHAT_GEMINI_COMPOSER_MODE=task`; `chat` is explicit opt-in. Verify-by-effect: both chips present, requested chip exclusively selected (ancestor `selected` class or group `--gem-active-index`). Do not pin `gem-segmented-button-*` as identity. Fail-closes `ERR_MODEL_DEGRADED` if the requested chip cannot be verified, same as a model-picker miss.
 - **[P0] Adapter**: `preInputHook` runs `ensureComposerMode` after the verified Argon/Pro/full-flash path.

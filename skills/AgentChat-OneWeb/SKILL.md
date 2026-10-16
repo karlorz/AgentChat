@@ -302,8 +302,9 @@ Gemini 默认使用并**必须验证选中当前菜单里最新的 Argon（newes
 1. **newest Argon + high reasoning**（默认，未设 / `argon` / 遗留 `flash`）— 仅在 Gemini 已验证菜单中确认「最新 Argon」与「高推理」两项均勾选后发送 prompt
 2. **Pro Extended Thinking**（`AGENTCHAT_GEMINI_MODEL=pro`）— 深度推理 + 延伸思考；Pro 不可用时只降级到已验证的 **newest Argon + high reasoning**
 3. **newest full Flash + high reasoning**（`AGENTCHAT_GEMINI_MODEL=full-flash`）— 显式 opt-in，仅当菜单里仍有完整 Flash
-4. **Composer 任務 (default)** — `AGENTCHAT_GEMINI_COMPOSER_MODE` 未设或为 `task` 时，模型验证之后必须点选并验证输入框下方的 **任務 / Task** chip（自定义 MCP / @ 连接器只在此模式绑定）。`chat`（對話 / Chat）为显式 opt-in。
-5. 无法选择或验证请求的状态（模型或 composer 模式）→ Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Flash / Pro / Spark / 标准思考 / 页面现有模型冒充默认 Argon，也绝不以未验证的 對話 chip 冒充 任務。Composer 上泛型「Argon」「Flash」aria 只是诊断，不能代替两条已选菜单行的验证。
+4. **Composer 任務 (default)** — `AGENTCHAT_GEMINI_COMPOSER_MODE` 未设或为 `task` 时，模型验证之后必须点选并验证输入框下方的 **任務 / Task** chip（自定义 MCP / @ 连接器只在此模式绑定）。`chat`（對話 / Chat）为显式 opt-in。顶层 `@` 芯片是连接器（WebCodex Local Projects、SkillWiki）；**GrokSearch / trends 是 WebCodex 内部 project/server，不是额外的 `@` 芯片**。适配器在 Task 验证后按 `geminiMcpLayers.js` 分类并写入 `cfg.mcp_connectors` / `cfg.mcp_inner_projects`。
+5. **Task 必须插入 `@Webcodex Local Projects`** — 自定义 `input()` 在 `fill('')` 清空之后打 `@Webcodex` 并只点 WebCodex Local Projects 行，再用键盘追加 prompt（与 ChatGPT `@Web search` 相同：paste/fill 会抹掉 mention）。缺芯片则 `ERR_MODEL_DEGRADED`。`AGENTCHAT_GEMINI_NO_MCP_MENTION=1` 可关闭。不要点 SkillWiki / GrokSearch / trends，也不要对内建工具第一行按 Enter。
+6. 无法选择或验证请求的状态（模型、composer 模式、或 Task mention）→ Gemini 本轮失败，正常 fallback chain 交给下一个 provider；绝不以 Flash / Pro / Spark / 标准思考 / 页面现有模型冒充默认 Argon，也绝不以未验证的 對話 chip 冒充 任務。Composer 上泛型「Argon」「Flash」aria 只是诊断，不能代替两条已选菜单行的验证。
 
 降级触发条件由各 adapter 的 `quotaPatterns` 定义（`lib/providers/adapters/<name>.js`），
 是权威来源。SKILL.md 不再维护第二份副本（过去已出现与代码不一致的漂移）。
