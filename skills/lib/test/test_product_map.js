@@ -123,6 +123,13 @@ const mcpSrc = fs.readFileSync(path.join(ROOT, 'skills/mcp-server/index.mjs'), '
 ok(/providers\/chain/.test(mcpSrc), 'mcp-server imports chain.js');
 ok(!/PROVIDER_NAMES = \[\s*"gemini", "chatgpt", "claude", "qwen"/.test(mcpSrc),
     'mcp-server does not hardcode the old 8-name list');
+const mcpSkill = fs.readFileSync(path.join(ROOT, 'skills/mcp-server/SKILL.md'), 'utf8');
+ok(!/expose 8 AI providers/.test(mcpSkill) && !/8 个 AI Provider/.test(mcpSkill),
+    'mcp SKILL.md does not say 8 providers');
+ok(mcpSkill.includes(String(keys.length)),
+    'mcp SKILL.md uses chain provider count', String(keys.length));
+ok(/不保留跨调用上下文/.test(mcpSkill),
+    'mcp SKILL.md gemini_chat matches index.mjs no-context contract');
 
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
