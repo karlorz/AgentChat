@@ -91,6 +91,7 @@ Muse "does everything" as an agent worker — treat it like a capable chat LLM w
 * **Secondary social ops** — only after Karl reopens social; use ops checklist + handoff; never auto-post.
 * **OneWeb path** — when Chrome CDP is already up and Karl wants chain classify/open: Muse tab via provider key `muse`. Live send/extract prove is still draft until selectors are verified.
 * **False quota block** — Muse has no `<main>`, so the quota scan reads the whole body with `[data-message-role]` and `nav[aria-label="Side chats"]` hidden. An older reply that merely mentions "rate limit" no longer reports `quota`; a live limit banner outside the transcript still does. The hidden nodes are restored after the scan.
+* **Image upload** — muse.ai's CSP rejects `fetch('data:…')`, so the shared clipboard paste tiers fail on this host. The adapter sets `imageUpload: 'file-input'` and the pipeline attaches through the composer's native `input[type=file]`. Verified 2026-10-21: an image carrying the code word `PVELXC-4471` was attached and Muse echoed exactly that code word back.
 
 ## Known Muse threads (example pointers only)
 

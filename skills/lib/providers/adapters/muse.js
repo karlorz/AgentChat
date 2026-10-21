@@ -518,6 +518,12 @@ module.exports = {
     stabilityWindow: 6_000,
     minResponseLength: 3,
 
+    // v24.1: muse.ai's CSP rejects `fetch('data:…')`, which kills BOTH clipboard
+    // paste tiers in pasteImagesToEditor (the data-URI Blob cannot be built).
+    // The composer still exposes a real input[type=file], so attach through it.
+    imageUpload: 'file-input',
+    imageUploadConfirmSelector: 'button[aria-label*="Remove attachment" i]',
+
     input: museInput,
     preInputHook: musePreInputHook,
     customSend: museCustomSend,

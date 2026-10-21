@@ -707,6 +707,91 @@ async function fallbackPasteImage(page, editor, img, log = () => {}) {
     }
 }
 /**
+ * v24.1: Attach images through the composer's native file input.
+ *
+ * Some UIs block the clipboard path outright: muse.ai ships a Content-Security-
+ * Policy that rejects `fetch('data:…')`, so BOTH pasteImagesToEditor and
+ * fallbackPasteImage die before an attachment exists (the data-URI Blob cannot
+ * be constructed). Those same UIs still expose a real `input[type=file]` inside
+ * the composer card, which Playwright can drive directly — no clipboard, no
+ * synthetic events, no CSP surface.
+ *
+ * The input is resolved by walking UP from the editor to the first ancestor that
+ * contains one, so the profile-avatar uploader elsewhere on the page is never a
+ * candidate.
+ *
+ * @param {Page} page - Playwright page
+ * @param {Locator} editor - The editor element
+ * @param {Array<{path: string, fileName: string}>} images - absolute paths
+ * @param {Function} log - Logger function
+ * @param {{confirmSelector?: string}} [opts] - adapter chip selector; default is Muse's Remove-attachment button
+ * @returns {Promise<boolean>} true when the attachment chip confirms the upload
+ */
+async function attachImagesViaFileInput(page, editor, images, log = () => {}, opts = {}) {
+    try {
+        // Resolve the composer-scoped file input relative to the editor.
+        const inputHandle = await editor.evaluateHandle((el) => {
+            let node = el;
+            while (node) {
+                if (node.querySelector) {
+                    const inp = node.querySelector('input[type="file"]');
+                    if (inp) return inp;
+                }
+                node = node.parentElement;
+            }
+            return null;
+        });
+
+        const inputEl = inputHandle.asElement();
+        if (!inputEl) {
+            log('no composer-scoped input[type=file] found');
+            return false;
+        }
+
+        const paths = [];
+        for (const img of images) {
+            if (!img.path) {
+                log(`image ${img.fileName} has no filesystem path — cannot use file input`);
+                return false;
+            }
+            paths.push(img.path);
+        }
+
+        // Count attachment chips before, so confirmation compares against a
+        // baseline rather than assuming the composer starts empty.
+        // Page-scoped on purpose: the chip renders in the composer CARD, which
+        // is a HIGHER ancestor than the first one holding the file input, so an
+        // editor-scoped query misses it. Selector comes from the adapter
+        // (`imageUploadConfirmSelector`); default matches Muse's
+        // "Remove attachment" control (not "Edit avatar and name").
+        const confirmSel = opts.confirmSelector
+            || 'button[aria-label*="Remove attachment" i]';
+        const countAttachments = () => page.evaluate((sel) =>
+            document.querySelectorAll(sel).length
+        , confirmSel);
+
+        const before = await countAttachments();
+        await inputEl.setInputFiles(paths);
+        log(`attached ${paths.length} image(s) via file input`);
+
+        const expected = before + paths.length;
+        const deadline = Date.now() + 10_000;
+        let seen;
+        while ((seen = await countAttachments()) < expected && Date.now() < deadline) {
+            await page.waitForTimeout(500);
+        }
+        if (seen < expected) {
+            log(`attachment confirmation failed: ${seen} chip(s) visible, expected ${expected}`);
+            return false;
+        }
+        return true;
+    } catch (e) {
+        log(`file-input attach failed: ${e.message}`);
+        return false;
+    }
+}
+
+/**
  * v12: Detect Playwright's "the CDP target/context/browser went away" error
  * class. These are transport-level losses — they say NOTHING about whether
  * the action that preceded them reached the server.
@@ -2187,19 +2272,30 @@ function createProviderRunner(cfg) {
             return classifyError(e, STAGES.INPUT, C.key);
         }
 
-        // ── Step 5.9: Paste images (v24) ──
-        // Paste image files into the chat BEFORE the text prompt.
-        // Uses async Clipboard API → Ctrl+V; falls back to simulated paste event.
-        // Images are pasted as attachments; the text editor remains separate in
-        // most UIs, so the clear + input step below is unaffected.
+        // ── Step 5.9: Attach images (v24) ──
+        // Attach image files to the chat BEFORE the text prompt.
+        // Order: clipboard paste (v24 default) → composer file input (v24.1).
+        // The clipboard path is skipped when the adapter declares
+        // `imageUpload: 'file-input'` because its page CSP rejects the
+        // data-URI fetch that path depends on.
         if (images.length > 0) {
             try {
-                const imagesOk = await pasteImagesToEditor(
-                    page, editor, images, (m) => flog(C.key, m)
-                );
+                const ilog = (m) => flog(C.key, m);
+                let imagesOk = C.imageUpload === 'file-input'
+                    ? false
+                    : await pasteImagesToEditor(page, editor, images, ilog);
+                if (!imagesOk) {
+                    if (C.imageUpload !== 'file-input') {
+                        flog(C.key, 'clipboard paste unavailable — trying composer file input');
+                    }
+                    imagesOk = await attachImagesViaFileInput(
+                        page, editor, images, ilog,
+                        { confirmSelector: C.imageUploadConfirmSelector }
+                    );
+                }
                 if (!imagesOk) {
                     return classifyError(
-                        new Error('Failed to paste image(s) into chat editor'),
+                        new Error('Failed to attach image(s) to chat editor'),
                         STAGES.INPUT, C.key, 'error'
                     );
                 }
@@ -2508,6 +2604,7 @@ module.exports = {
     inputViaKeyboard,
     pasteImagesToEditor,
     fallbackPasteImage,
+    attachImagesViaFileInput,
     clearEditor,
     clickSend,
     waitForCompletion,

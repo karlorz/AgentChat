@@ -150,7 +150,10 @@ node ~/.claude/skills/AgentChat-OneWeb/index.js --image-path="<图片绝对路�
 
 **备用路径**（当 Clipboard API 不可用时）：
 * 模拟 paste 事件：创建 `DataTransfer` 包含图片 `File` 对象，分发 `ClipboardEvent('paste')`
+* **Composer 文件输入**（v24.1）：沿编辑器向上找到第一个包含 `input[type=file]` 的祖先节点，直接 `setInputFiles()`。上传后以 `button[aria-label*="Remove attachment"]` 数量增长作为确认信号。
 * 最终兜底：将 `<img>` 标签注入 contenteditable 编辑器
+
+**CSP 阻断的 provider（Muse）**：muse.ai 的 CSP 拒绝 `fetch('data:…')`，导致上述两个剪贴板分支在构造 data-URI Blob 时即失败。此类 provider 的 adapter 声明 `imageUpload: 'file-input'`，管线直接走 Composer 文件输入，不再尝试剪贴板。
 
 ### 3. 支持的图片格式
 

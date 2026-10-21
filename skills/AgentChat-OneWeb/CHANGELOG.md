@@ -1,5 +1,9 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-10-21 — Muse image upload via composer file input
+- **[P0] CSP clipboard miss (`providerFactory.js`)**: muse.ai rejects `fetch('data:…')`, so both clipboard paste tiers died before an attachment existed. New `attachImagesViaFileInput` walks up from the editor to the first ancestor `input[type=file]`, `setInputFiles`s the paths in one call, and confirms against a page-wide attachment-chip count (baseline + N). Adapter `imageUpload: 'file-input'` skips clipboard; other providers keep clipboard first with file-input as fallback. Chip selector is `imageUploadConfirmSelector` on the adapter.
+- **[test]** `test_muse_image_upload.js`.
+
 ## 2026-10-21 — Extracted images land in `~/.agentchat/assets`
 - **[P1] Destination (`lib/assetsDir.js` + `index.js`)**: provider-extracted images no longer write to `process.cwd()`. Default is `$HOME/.agentchat/assets` (same user-level tree as `.env`). Override order: `--download-dir=PATH` → `$AGENTCHAT_ASSETS_DIR` → `$AGENTCHAT_HOME/assets` → `$HOME/.agentchat/assets`. `--download-dir=.` restores the old cwd dump. `--no-download-images` still skips the phase and does not create the directory.
 - **[P1] Lazy mkdir**: `downloadAllImages` `mkdirSync`s only after the no-URL early return, so empty responses leave the dest uncreated. A non-directory dest throws; `main()` keeps the raw stdout and logs `Image download phase failed`.
