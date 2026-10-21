@@ -90,7 +90,7 @@ index.js 在收到 web AI 响应后，**自动执行**以下步骤：
    * Markdown 语法：`![alt](url)`
    * HTML 标签：`<img src="url">`
    * 直链：以 `.png`/`.jpg`/`.jpeg`/`.gif`/`.webp`/`.svg` 结尾的 URL
-2. 将每张图片下载到 **当前工作目录**（`process.cwd()`，即用户执行 skill 时所在的目录）
+2. 将每张图片下载到 **用户级资产目录**（默认 `$HOME/.agentchat/assets`）。覆盖顺序：`--download-dir=PATH` → `$AGENTCHAT_ASSETS_DIR` → `$AGENTCHAT_HOME/assets` → `$HOME/.agentchat/assets`。相对路径相对 cwd 解析；`.env` 值为字面量，`~` 不展开。无图片 URL 时不创建目录。
 3. 文件名格式：`ai-image-{YYYYMMDD-HHmmss}-{pid}-{序号}.{ext}`（v14 加入 pid，避免并发 worker 同秒写同名互相覆盖）
 4. 下载结果摘要（`## 📥 Downloaded Images` 段落）：**stdout 为 TTY 时**（人类直接运行）附加在响应末尾；**stdout 为管道时**（execute.js / Python SDK / MCP server 消费）摘要只走 stderr，stdout 保持"AI 响应原文"机器契约不被污染，成功/失败计数记入 receipt（`images_ok` / `images_failed`）。
 
@@ -105,11 +105,12 @@ index.js 在收到 web AI 响应后，**自动执行**以下步骤：
 
 ### 3. 下载目录说明
 
-下载目标始终为 **用户当前工作目录**（shell 的 `$PWD`），而非 skill 安装目录。例如：
-* 用户在 `~/Project/` 下调用 `/AgentChat-OneWeb 帮我画流程图` → 图片下载到 `~/Project/`
-* 用户在 `~/Data_Project/` 下调用 → 图片下载到 `~/Data_Project/`
+默认写入 **`$HOME/.agentchat/assets`**（与 sessions / `.env` 同一用户级树），不写入调用方 cwd，也不写入 skill 安装目录。Python SDK 与 MCP 消费 stdout，不依赖这些文件。
 
-可通过 `--no-download-images` 标志禁用自动下载。
+* `--download-dir=/abs/path` 或 `AGENTCHAT_ASSETS_DIR` 覆盖默认
+* `--download-dir=.` 恢复旧行为（写入当前工作目录）
+* `--no-download-images` 禁用自动下载，且不创建资产目录
+* 仓库 `.gitignore` 忽略根目录 `ai-image-*` 与 `/.agentchat/`，兜住 cwd 残留与可选的仓库内缓存
 
 ---
 
@@ -409,6 +410,9 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --from=ChatGPT "prompt"
 node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=./photo.png "描述这张图片"
 node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=a.png --image-path=b.jpg "比较这两张图片"
 
+# 提取的生成图默认落到 ~/.agentchat/assets；--download-dir=. 写回调用方 cwd
+node ~/.agents/skills/AgentChat-OneWeb/index.js --image --download-dir=. "画一张架构图"
+
 # Read an existing ChatGPT conversation without sending a prompt
 node ~/.agents/skills/AgentChat-OneWeb/index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" --timeout=300000
 
@@ -435,7 +439,8 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --only=muse --resume-muse=https:
 | `--close` / `--close-browser` | 执行完毕后关闭所有 tab 和浏览器连接（默认保留） |
 | `--image` | 图片生成意图：index.js 进程内追加标准生图增强指令并记录 `image_prompt_enhanced` telemetry（见图片协议 §1） |
 | `--image-path=PATH` | 图片上传：读取本地图片文件，粘贴到 AI 聊天对话框后再发送 prompt（可重复使用多次以上传多张图片）。触发条件见图片上传协议 §4 |
-| `--no-download-images` | 禁用图片自动下载（默认启用，从响应中提取图片 URL 下载到当前工作目录） |
+| `--download-dir=PATH` | 覆盖提取图落盘目录。默认 `$HOME/.agentchat/assets`。`.` 即调用方 cwd。路径含 `=` 时用 prefix slice 解析。 |
+| `--no-download-images` | 禁用图片自动下载（默认启用，从响应中提取图片 URL 下载到资产目录） |
 | `--resume-chatgpt=URL` | Read-only ChatGPT recovery: open an existing validated `/c/<id>` conversation, never type or send, and return its completed answer or exit 10 pending |
 | `--resume-muse=URL` | Muse chat target: `main` / `https://muse.ai/` (Main chat), `new` / `https://muse.ai/thread/new` (default), or `https://muse.ai/thread/<uuid>`. Also `AGENTCHAT_MUSE_URL`. CLI wins over env. |
 

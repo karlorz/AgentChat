@@ -288,8 +288,9 @@ server.close();
 // Wiring ─ source-level
 await ok('wiring: tryAllProviders returns page; main() forwards it to downloadAllImages', () => {
     const src = fs.readFileSync(path.join(AGENTCHAT_ROOT, 'skills/AgentChat-OneWeb/index.js'), 'utf8');
-    assert(/provider:\s*provider\.name,\s*page\s*}/.test(src), 'success result carries page');
-    assert(/downloadAllImages\(result\.response,\s*process\.cwd\(\),\s*\{\s*page:\s*result\.page\s*\}\)/.test(src), 'main passes result.page');
+    assert(/provider:\s*provider\.name,\s*page:\s*result\.page/.test(src), 'success result carries page');
+    assert(/resolveAssetsDir\(downloadDirCli\)/.test(src), 'main resolves dest via resolveAssetsDir');
+    assert(/downloadAllImages\(result\.response,\s*destDir,\s*\{\s*page:\s*result\.page\s*\}\)/.test(src), 'main forwards result.page');
     const cg = fs.readFileSync(path.join(AGENTCHAT_ROOT, 'skills/lib/providers/adapters/chatgpt.js'), 'utf8');
     assert(/imageScopeSelector:\s*'\[data-message-author-role="assistant"\]'/.test(cg), 'chatgpt adapter widens image scope');
 });

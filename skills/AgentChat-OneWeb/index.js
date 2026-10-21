@@ -17,6 +17,7 @@
  *                                   # (used by AgentChat-IndependentTasks, which owns
  *                                   # its own cross-provider fallback + locking)
  *   node index.js --no-download-images "..."  # skip image download post-processing
+ *   node index.js --download-dir=PATH "..."   # override extract dest (default ~/.agentchat/assets)
  *   node index.js --image-path=/path/to/img.png "prompt"  # upload image before prompt
  *   node index.js --ephemeral-tab "..."  # dedicated new tab, never reused, closed on exit
  *                                   # (required by same-provider concurrency:
@@ -84,6 +85,7 @@ const { log: _log, startTimer: _startTimer, spinner } = require('../lib/terminal
 const { connectWithRetry: _connectWithRetry, doctorCheck: _doctorCheck, ensureChromeCdp, startHint, isWSL, CDP_URL: LIB_CDP_URL } = require('../lib/cdp');
 const { acquireBrowserSlot, releaseBrowserSlot } = require('../lib/locks');
 const { acquireSeatLock, releaseSeatLock } = require('../lib/seatLock');
+const { resolveAssetsDir } = require('../lib/assetsDir');
 
 // ── Adapt shared modules to OneWeb naming conventions ──
 const PREFIX = 'fallback';
@@ -368,7 +370,7 @@ const IMAGE_ENHANCE_INSTRUCTION =
  * link-local, or RFC1918 hosts. Attack shape: a prompt-injected
  * `![x](http://127.0.0.1:9222/json/list)` in the web AI's answer would make
  * the direct tier write the CDP target list (debug websocket URLs for every
- * tab of the user's browser) into a file in the user's cwd — and the
+ * tab of the user's browser) into a file in the assets dir — and the
  * credentialed browser tiers could probe LAN endpoints with session cookies.
  * Literal-IP/hostname check only (DNS rebinding is out of scope for a CLI
  * that downloads a handful of images). Tests / intranet use can opt out via
@@ -396,8 +398,8 @@ function isBlockedImageHost(url) {
 // ── v20: Provider UI artifact host denylist ──
 // Web AI provider pages include UI chrome images (user avatars, logos, favicons)
 // that get scraped into the response text alongside the AI's actual answer. These
-// are NOT content the AI model produced — downloading them to the user's cwd is
-// pure noise. We block known provider asset CDN hosts here.
+// are NOT content the AI model produced — downloading them into the assets
+// dir is pure noise. We block known provider asset CDN hosts here.
 //
 // Set AGENTCHAT_DOWNLOAD_PROVIDER_ASSETS=1 to opt back into downloading everything
 // (useful for debugging CDP response extraction).
@@ -629,6 +631,10 @@ async function downloadAllImages(response, destDir, opts) {
     if (!urls.length) {
         return { downloaded: [], failed: [], response, rawResponse: response, summary: '' };
     }
+
+    // Create dest only when there is something to write. No-URL responses
+    // and --no-download-images (which never call us) must not mkdir.
+    fs.mkdirSync(destDir, { recursive: true });
 
     // v14: hard limits — see the constants block. Everything past the cap or
     // the deadline is reported loudly as failed, never silently dropped.
@@ -1119,7 +1125,8 @@ async function main() {
     let startFrom = null;
     let keepTabs = true; // Always keep tabs — never close user's browser
     let singleAttempt = false; // --single: try exactly one provider, no cascade
-    let downloadImages = true; // download images from response to cwd (--no-download-images to disable)
+    let downloadImages = true; // download images from response (--no-download-images to disable)
+    let downloadDirCli = null; // --download-dir=PATH; default ~/.agentchat/assets
     let imageIntent = false;   // v14 --image: append IMAGE_ENHANCE_INSTRUCTION in-process
     let imagePaths = [];       // v24 --image-path: image files to upload before sending prompt
     let resumeChatGptUrl = null;
@@ -1133,7 +1140,7 @@ async function main() {
     let ephemeralTab = false;
 
     const USAGE =
-        'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--deep-research] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
+        'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--download-dir=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--deep-research] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
         '       node index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" [--timeout=MS]\n' +
         '       node index.js --only=muse [--resume-muse=URL] "Your prompt"\n' +
         '       [--deep-research] (30min/provider budget, opt-in deep research mode)\n' +
@@ -1242,6 +1249,10 @@ async function main() {
             // Image download opt-out — skip the automatic image download post-processing.
             // Images in the web AI response will be preserved as remote URLs only.
             downloadImages = false;
+        } else if (a.startsWith('--download-dir=')) {
+            // Prefix slice so a path containing '=' is not truncated.
+            downloadDirCli = a.slice('--download-dir='.length).trim();
+            if (!downloadDirCli) usageExit('--download-dir= requires a path');
         } else if (a.startsWith('--')) {
             // v14: unknown flags WARN instead of vanishing. Silent drops are the
             // root of a recurring bug class here: --keep-tabs was once silently
@@ -1487,7 +1498,8 @@ async function main() {
             let finalResponse = result.response;
             if (downloadImages) {
                 try {
-                    const dlResult = await downloadAllImages(result.response, process.cwd(), { page: result.page }); // v13: session-aware download
+                    const destDir = resolveAssetsDir(downloadDirCli);
+                    const dlResult = await downloadAllImages(result.response, destDir, { page: result.page }); // v13: session-aware download
                     ctx.telemetry.images_ok = (dlResult.downloaded || []).length;
                     ctx.telemetry.images_failed = (dlResult.failed || []).length;
                     // v14: stdout is a MACHINE CONTRACT when piped (lib/execute.js,
@@ -1618,6 +1630,7 @@ module.exports = {
     // v13: exported for tests and for IndependentTasks' own post-processing
     extractImageUrls,
     downloadAllImages,
+    resolveAssetsDir,
     downloadFile,
     fetchViaBrowser,
     sniffImageExt,

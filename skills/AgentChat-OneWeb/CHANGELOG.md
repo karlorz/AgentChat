@@ -1,5 +1,12 @@
 # AgentChat-OneWeb Changelog
 
+## 2026-10-21 — Extracted images land in `~/.agentchat/assets`
+- **[P1] Destination (`lib/assetsDir.js` + `index.js`)**: provider-extracted images no longer write to `process.cwd()`. Default is `$HOME/.agentchat/assets` (same user-level tree as `.env`). Override order: `--download-dir=PATH` → `$AGENTCHAT_ASSETS_DIR` → `$AGENTCHAT_HOME/assets` → `$HOME/.agentchat/assets`. `--download-dir=.` restores the old cwd dump. `--no-download-images` still skips the phase and does not create the directory.
+- **[P1] Lazy mkdir**: `downloadAllImages` `mkdirSync`s only after the no-URL early return, so empty responses leave the dest uncreated. A non-directory dest throws; `main()` keeps the raw stdout and logs `Image download phase failed`.
+- **[P2] Flag parse**: `--download-dir=` uses prefix slice so a path containing `=` is not truncated. `.env` values stay literal (`~` is not expanded).
+- **[docs/test]** OneWeb SKILL.md download section + CLI table; `.env.example`; repo `.gitignore` `/ai-image-*` and `/.agentchat/`; `test_assets_dir.js`; v13 wiring assertion now checks `destDir` + `result.page`.
+- **Not in this change**: Muse composer `imageUpload: 'file-input'` stays a separate commit.
+
 ## 2026-10-15 — Gemini required `@Webcodex Local Projects`
 - **[P0] Mention after Task (`geminiMcpLayers.js` + Gemini `input`)**: live Gemini chat `13e5344e1cc51b40` stayed on Task + Argon but searched Drive/Gmail/VM because the composer had no `@Webcodex Local Projects` chip. Task mode now types `@Webcodex` (not bare `@`, so Avatar/Skills are not first), clicks only the WebCodex Local Projects menuitem, verifies the chip, then keyboard-appends the prompt. Factory/Gemini `fill('')` still runs first and would wipe a preInput mention. Do not pick SkillWiki, GrokSearch, or trends. Do not Enter the first built-in row. Leftover `@Webcodex` is Escape+Backspace on miss. Fail-closes `ERR_MODEL_DEGRADED`. Opt-out `AGENTCHAT_GEMINI_NO_MCP_MENTION=1`.
 - **[test]** mention picker + adapter fill-then-mention contract in `test_gemini_mcp_layers.js`.
