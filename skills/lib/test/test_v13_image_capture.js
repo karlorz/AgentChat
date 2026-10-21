@@ -47,7 +47,7 @@ function ok(name, fn) {
 
 // ── DOM mock: enough of the Element surface for collectResponseImages ───────
 function el(tag, { text = '', imgs = [], closestMap = {} } = {}) {
-    return {
+    const node = {
         tagName: tag,
         innerText: text,
         textContent: text,
@@ -55,6 +55,14 @@ function el(tag, { text = '', imgs = [], closestMap = {} } = {}) {
         closest: (sel) => closestMap[sel] || null,
         getBoundingClientRect: () => ({ width: 0, height: 0 }),
     };
+    // IN_PAGE_TEXT_WITH_MATH clones the node and strips .katex/mjx containers;
+    // the clone only needs the text surface plus a no-op querySelectorAll.
+    node.cloneNode = () => ({
+        innerText: text,
+        textContent: text,
+        querySelectorAll: () => ({ forEach: () => {} }),
+    });
+    return node;
 }
 function img({ src, alt = '', w = 1536, h = 1024 }) {
     return {
@@ -64,8 +72,17 @@ function img({ src, alt = '', w = 1536, h = 1024 }) {
     };
 }
 // Locator mock: evaluate(fn, args) runs fn against a chosen DOM node.
-function mockResponseEl(node) {
-    return { evaluate: async (fn, args) => fn(node, args) };
+// The in-page callback reads the bare `document` global (roots = [document]
+// for the shadow-DOM walk); scopeNode stands in for it during evaluation.
+function mockResponseEl(node, scopeNode) {
+    return {
+        evaluate: async (fn, args) => {
+            const prev = global.document;
+            global.document = scopeNode || node;
+            try { return await fn(node, args); }
+            finally { global.document = prev; }
+        },
+    };
 }
 const PAGE_NOOP = {}; // extractResponse's page param is only used by hooks
 
@@ -92,7 +109,7 @@ await ok('L1: sibling <img> captured via imageScopeSelector, quota text preserve
         closestMap: { '[data-message-author-role="assistant"]': turn },
     });
     const out = await extractResponse(
-        PAGE_NOOP, mockResponseEl(markdownDiv),
+        PAGE_NOOP, mockResponseEl(markdownDiv, turn),
         baseC({ imageScopeSelector: '[data-message-author-role="assistant"]' }),
         '为多供应商自动降级流程生成一张精简机制图'
     );

@@ -1495,24 +1495,29 @@ async function resumeChatGptConversation(context, conversationUrl, config, timeo
  *
  * Two-tier URL handling:
  *   1. http(s) — accepted as before; downloaded from Node via CDP or direct fetch.
- *   2. blob: — converted in-page to data URIs via canvas.drawImage(). Blob URLs
- *      are only valid inside their origin's browsing context; a data URI embeds
- *      the pixel payload so downstream downloadAllImages() can decode and write
- *      it without any browser round-trip.
+ *   2. blob: — converted in-page to data URIs via fetch(blobUrl) →
+ *      FileReader.readAsDataURL. Blob URLs are only valid inside their
+ *      origin's browsing context; a data URI embeds the pixel payload so
+ *      downstream downloadAllImages() can decode and write it without any
+ *      browser round-trip. (Replaced the v13 canvas.drawImage path: Muse's
+ *      blob images die there — canvas taint — while fetch+FileReader reads
+ *      the same bytes fine, proven live 2026-10-21.)
  *   3. data: — accepted directly (already self-contained).
  *
- * Tainted-canvas failures (cross-origin images the page embedded) skip the
- * image with a diagnostic counter — same contract as the old skippedNonHttp.
+ * Blob-conversion failures skip the image with a diagnostic counter AND a
+ * per-skip reason string (skipReasons) so the log names the real error
+ * instead of guessing "tainted canvas".
  *
  * Shadow DOM traversal: mirrors heuristicFindEditor's TreeWalker pattern
  * (roots = [document] → walk → collect shadowRoots → querySelectorAll on each).
  *
- * @returns {Promise<{images: {src,alt,w,h}[], skippedUncapturable: number}>}
+ * @returns {Promise<{images: {src,alt,w,h}[], skippedUncapturable: number, skipReasons: string[]}>}
  */
 async function collectResponseImages(responseEl, config) {
     const scopeSel = config.imageScopeSelector || null;
     const minPx = Number.isFinite(config.imageMinPx) ? config.imageMinPx : 64;
-    return responseEl.evaluate((el, args) => {
+    // Async callback: blob→dataURI conversion awaits fetch + FileReader.
+    return responseEl.evaluate(async (el, args) => {
         let scope = el;
         if (args.scopeSel) {
             try { scope = el.closest(args.scopeSel) || el; } catch (_) { /* keep el */ }
@@ -1546,6 +1551,7 @@ async function collectResponseImages(responseEl, config) {
         const seen = new Set();
         const images = [];
         let skippedUncapturable = 0;
+        const skipReasons = [];
 
         for (const img of allImgs) {
             let src = img.currentSrc || img.src || '';
@@ -1554,21 +1560,30 @@ async function collectResponseImages(responseEl, config) {
             // ── Blob URL → data URI conversion ──
             // Blob URLs are only valid in this browsing context; downstream
             // Node-side downloadAllImages() can't fetch them. Convert to a
-            // self-contained data URI via canvas so the payload survives
-            // serialization across the CDP boundary.
+            // self-contained data URI by fetching the blob and reading it
+            // with FileReader, so the payload survives serialization across
+            // the CDP boundary. (Canvas drawImage+toDataURL was the v13 path;
+            // it dies on tainted canvas for Muse's blob images while
+            // fetch+FileReader reads the same bytes without the canvas.)
             if (/^blob:/i.test(src)) {
                 try {
-                    const cw = img.naturalWidth || img.width || 512;
-                    const ch = img.naturalHeight || img.height || 512;
-                    const canvas = document.createElement('canvas');
-                    canvas.width = cw;
-                    canvas.height = ch;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0);
-                    src = canvas.toDataURL('image/png');
-                } catch (_) {
-                    // Tainted canvas (cross-origin image) — uncapturable.
+                    const resp = await fetch(src);
+                    if (!resp || !resp.ok) {
+                        throw new Error(`HTTP ${resp ? resp.status : 'no response'}`);
+                    }
+                    const blobData = await resp.blob();
+                    src = await new Promise((resolve, reject) => {
+                        const fr = new FileReader();
+                        fr.onload = () => resolve(String(fr.result || ''));
+                        fr.onerror = () => reject(fr.error || new Error('FileReader failed'));
+                        fr.readAsDataURL(blobData);
+                    });
+                    if (!/^data:/i.test(src)) {
+                        throw new Error('FileReader returned a non-data URI');
+                    }
+                } catch (e) {
                     skippedUncapturable++;
+                    skipReasons.push(`blob fetch failed: ${(e && e.message) || e}`);
                     continue;
                 }
             } else if (/^data:/i.test(src)) {
@@ -1576,6 +1591,7 @@ async function collectResponseImages(responseEl, config) {
             } else if (!/^https?:\/\//i.test(src)) {
                 // Unknown scheme — uncapturable.
                 skippedUncapturable++;
+                skipReasons.push(`unknown scheme: ${src.slice(0, 40)}`);
                 continue;
             }
 
@@ -1602,14 +1618,14 @@ async function collectResponseImages(responseEl, config) {
                     probe = probe.parentElement;
                 }
             }
-            if (rejected) { skippedUncapturable++; continue; }
+            if (rejected) { skippedUncapturable++; skipReasons.push('ui decoration container'); continue; }
 
             // v27 alt-text decor check: static decor images often carry bare
             // "avatar" / "icon" / "logo" alt text (generated images don't).
             {
                 const alt = String(img.alt || '').toLowerCase().trim();
                 if (/^(?:avatar|icon|logo|用户头像|头像|图标|logo|贴纸|user.?avatar)$/i.test(alt)) {
-                    skippedUncapturable++; continue;
+                    skippedUncapturable++; skipReasons.push('decor alt text'); continue;
                 }
             }
 
@@ -1621,7 +1637,7 @@ async function collectResponseImages(responseEl, config) {
                 const urlLo = src.toLowerCase();
                 if (/\b(?:logo|logo-?dark|favicon|avatar|icon|activeimg)\b/i.test(urlLo)
                     && !/dall[·e]|imagen|midjourney|generated|output|render/i.test(urlLo)) {
-                    skippedUncapturable++; continue;
+                    skippedUncapturable++; skipReasons.push('decor url'); continue;
                 }
             }
 
@@ -1639,7 +1655,7 @@ async function collectResponseImages(responseEl, config) {
             });
         }
 
-        return { images, skippedUncapturable };
+        return { images, skippedUncapturable, skipReasons };
     }, { scopeSel, minPx });
 }
 
@@ -1686,7 +1702,13 @@ async function extractResponse(page, responseEl, config, prompt, baselineText) {
             if (r && Array.isArray(r.images)) {
                 images = r.images.filter(im => im && typeof im.src === 'string');
                 if (r.skippedUncapturable > 0) {
-                    flog(config.key, `extract: ${r.skippedUncapturable} image src(s) skipped — uncapturable (tainted canvas / unknown scheme)`);
+                    // Surface the REAL per-skip reason (e.g. "blob fetch
+                    // failed: <err>") — the old generic "tainted canvas /
+                    // unknown scheme" guess hid the actual failure.
+                    const why = (Array.isArray(r.skipReasons) && r.skipReasons.length)
+                        ? ` (${r.skipReasons.slice(0, 3).join('; ')})`
+                        : '';
+                    flog(config.key, `extract: ${r.skippedUncapturable} image src(s) skipped — uncapturable${why}`);
                 }
             }
         } catch (_) { /* best-effort — never fail extraction over image scan */ }
