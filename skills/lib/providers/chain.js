@@ -27,7 +27,7 @@ const PROVIDER_CHAIN = [
     // only falls through here after stronger adapters. Live CDP prove is out
     // of scope until Karl reopens social/browser work; adapter exists so
     // OneWeb/agentweb-setup can classify/open the Muse tab.
-    { key: 'muse',     name: 'Muse',     url: 'https://muse.ai/',                  authDomains: ['muse.ai/login', 'accounts.muse.ai', 'muse.ai/signin'] },
+    { key: 'muse',     name: 'Muse',     url: 'https://muse.ai/thread/new',         authDomains: ['muse.ai/login', 'accounts.muse.ai', 'muse.ai/signin'] },
 ];
 
 /** Provider keys in chain order — derive lists from this instead of re-typing. */

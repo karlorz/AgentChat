@@ -766,6 +766,11 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
     // Only manage our own tabs — page.close() for cleanup, but NEVER browser.close().
     const { keepTabs = true } = options;
     const ephemeralTab = !!options.ephemeralTab; // v19: never reuse, close on exit
+    // Muse chat target: main() passes the CLI/env-resolved URL; in-process
+    // callers that omit it still honor AGENTCHAT_MUSE_URL via the adapter.
+    const museTargetUrl = options.museTargetUrl
+        || ADAPTER_CONFIGS.muse.resolveMuseChatUrl()
+        || ADAPTER_CONFIGS.muse.url;
     const totalTimeout = options.totalTimeout || DEFAULT_TOTAL_TIMEOUT;
     const providerTimeout = options.providerTimeout
         || (options.singleAttempt
@@ -928,6 +933,14 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
             // is the isolation contract that makes same-provider concurrency
             // safe, and it can never inherit a previous session's stale chat.
             page = ephemeralTab ? null : findProviderPage(context, provider);
+            if (page && provider.key === 'muse') {
+                const pathsMatch = typeof ADAPTER_CONFIGS.muse.museChatPathsMatch === 'function'
+                    && ADAPTER_CONFIGS.muse.museChatPathsMatch(page.url(), museTargetUrl);
+                if (!pathsMatch) {
+                    log(`  Muse: existing tab is a different thread — opening a new tab (standing thread left in place)`);
+                    page = null;
+                }
+            }
             if (page) {
                 log(`  ${provider.name}: reusing existing tab`);
             } else {
@@ -941,7 +954,10 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
             // Dispatch to provider runner (each receives ctx for telemetry tracking)
             const runner = (options.runners || RUNNERS)[provider.key];
             result = runner
-                ? await runner(page, prompt, perProvTimeout, ctx, { images: options.images })
+                ? await runner(page, prompt, perProvTimeout, ctx, {
+                    images: options.images,
+                    ...(provider.key === 'muse' ? { targetUrl: museTargetUrl } : {}),
+                })
                 : classifyError(new Error(`Unknown provider: ${provider.key}`), 'navigate', provider.key);
         } catch (err) {
             const pe = new ProviderError(err, { stage: 'unknown', provider: provider.key });
@@ -1107,6 +1123,7 @@ async function main() {
     let imageIntent = false;   // v14 --image: append IMAGE_ENHANCE_INSTRUCTION in-process
     let imagePaths = [];       // v24 --image-path: image files to upload before sending prompt
     let resumeChatGptUrl = null;
+    let resumeMuseRaw = null;
     // v19 --ephemeral-tab: run in a DEDICATED new tab (never reuse an existing
     // provider tab; close our tab on exit). Required for same-provider
     // concurrency (AGENTCHAT_MAX_TABS_PER_PROVIDER > 1): with reuse, two
@@ -1118,6 +1135,7 @@ async function main() {
     const USAGE =
         'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--deep-research] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
         '       node index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" [--timeout=MS]\n' +
+        '       node index.js --only=muse [--resume-muse=URL] "Your prompt"\n' +
         '       [--deep-research] (30min/provider budget, opt-in deep research mode)\n' +
         '       echo "prompt" | node index.js [flags]';
     // v14: usage errors exit 64 (BSD EX_USAGE), WITH a receipt. They used to
@@ -1171,6 +1189,9 @@ async function main() {
             const candidate = a.slice('--resume-chatgpt='.length);
             resumeChatGptUrl = validateChatGptConversationUrl(candidate);
             if (!resumeChatGptUrl) usageExit('invalid ChatGPT conversation URL');
+        } else if (a.startsWith('--resume-muse=')) {
+            resumeMuseRaw = a.slice('--resume-muse='.length).trim();
+            if (!resumeMuseRaw) usageExit('--resume-muse= requires a Muse URL (main, new, or https://muse.ai/thread/<uuid>)');
         } else if (a === '--keep-tabs') {
             keepTabs = true;
         } else if (a === '--close' || a === '--close-browser') {
@@ -1239,6 +1260,16 @@ async function main() {
         customProvTimeout = Math.max(customProvTimeout || 0, DEEP_RESEARCH_TIMEOUT_MS);
         customTimeout = Math.max(customTimeout || 0, DEEP_RESEARCH_TIMEOUT_MS);
     }
+
+    const museTargetUrl = (() => {
+        const resolve = ADAPTER_CONFIGS.muse.resolveMuseChatUrl;
+        if (resumeMuseRaw != null) {
+            const resolved = resolve(resumeMuseRaw);
+            if (!resolved) usageExit('invalid Muse chat URL (expected main, new, or https://muse.ai/thread/<uuid>)');
+            return resolved;
+        }
+        return resolve() || ADAPTER_CONFIGS.muse.url;
+    })();
 
     // Read prompt
     let prompt = remaining.join(' ').trim();
@@ -1435,6 +1466,7 @@ async function main() {
                 singleAttempt,
                 ephemeralTab, // v19: dedicated tab, no reuse, closed on exit
                 images: encodedImages, // v24: images to paste before prompt text
+                museTargetUrl,
                 // v12: one-shot mid-chain CDP recovery (see browser-loss fail-fast)
                 reconnect: () => connectWithRetry(CDP_URL, 2),
             });

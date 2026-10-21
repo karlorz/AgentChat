@@ -45,7 +45,7 @@ Quote that line in the final answer. Missing receipt = did not execute.
 
 | Layer | What |
 | --- | --- |
-| **OneWeb provider** | `PROVIDER_CHAIN` key `muse` → `adapters/muse.js` auto-loaded into RUNNERS. agentweb-setup can classify/open `https://muse.ai/`. |
+| **OneWeb provider** | `PROVIDER_CHAIN` key `muse` → `adapters/muse.js` auto-loaded into RUNNERS. Default chat is a **new session** `https://muse.ai/thread/new`. Main chat is `https://muse.ai/` via `--resume-muse=main` or `AGENTCHAT_MUSE_URL`. Existing threads via `--resume-muse=https://muse.ai/thread/<uuid>`. |
 | **This skill** | Operator / worker modes: ops checklist, prompt templates, handoff receipts, worker plans. Does **not** launch live CDP signup tonight. |
 
 Do **not** say "Muse is outside PROVIDER_CHAIN". It is on the chain (near end). Prefer stronger providers for production chat until live Muse prove lands.
@@ -78,7 +78,7 @@ playwright-cli attach --cdp="$AGENTCHAT_CDP_URL"
 playwright-cli tab-list
 ```
 
-The loader reports the selected `.env` path on stderr. Process environment overrides file values; `CDP_HOST` and `CDP_PORT` select the endpoint. Reuse the existing Muse thread and check for the visible `textarea[placeholder="Message"]` before declaring the session ready. Keep test messages within the user's explicit authorization.
+The loader reports the selected `.env` path on stderr. Process environment overrides file values; `CDP_HOST` and `CDP_PORT` select the endpoint. Default OneWeb Muse chat is `https://muse.ai/thread/new`. Reuse a standing thread only when `--resume-muse=` / `AGENTCHAT_MUSE_URL` names that URL; otherwise open a new tab and leave the standing thread in place. Check for the visible `textarea[placeholder="Message"]` before declaring the session ready. Keep test messages within the user's explicit authorization.
 
 On Box Fork-N desktops, `DISPLAY :N` maps to CDP port `9222+N`. Use this to diagnose a mismatch against the Chrome process and its open tabs. Pin the intended desktop in the local AgentChat `.env`; keep `AGENTCHAT_NO_AUTOSTART=1` for an existing operator-owned browser. The resolved endpoint also applies when using Playwright from another project directory.
 
@@ -90,6 +90,7 @@ Muse "does everything" as an agent worker — treat it like a capable chat LLM w
 * **Research** — ask Muse to browse/summarize; quote sources Muse returns; do not invent citations.
 * **Secondary social ops** — only after Karl reopens social; use ops checklist + handoff; never auto-post.
 * **OneWeb path** — when Chrome CDP is already up and Karl wants chain classify/open: Muse tab via provider key `muse`. Live send/extract prove is still draft until selectors are verified.
+* **False quota block** — Muse has no `<main>`, so the quota scan reads the whole body with `[data-message-role]` and `nav[aria-label="Side chats"]` hidden. An older reply that merely mentions "rate limit" no longer reports `quota`; a live limit banner outside the transcript still does. The hidden nodes are restored after the scan.
 
 ## Known Muse threads (example pointers only)
 

@@ -411,6 +411,13 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --image-path=a.png --image-path=
 
 # Read an existing ChatGPT conversation without sending a prompt
 node ~/.agents/skills/AgentChat-OneWeb/index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" --timeout=300000
+
+# Muse: default is a new session (https://muse.ai/thread/new). Main chat or an
+# existing thread is opt-in. A standing Muse tab on a different path is left
+# in place; OneWeb opens a new tab instead of navigating it away.
+node ~/.agents/skills/AgentChat-OneWeb/index.js --only=muse "prompt"
+node ~/.agents/skills/AgentChat-OneWeb/index.js --only=muse --resume-muse=https://muse.ai/ "prompt"
+node ~/.agents/skills/AgentChat-OneWeb/index.js --only=muse --resume-muse=https://muse.ai/thread/<uuid> "prompt"
 ```
 
 ### CLI Flags
@@ -430,6 +437,7 @@ node ~/.agents/skills/AgentChat-OneWeb/index.js --resume-chatgpt="https://chatgp
 | `--image-path=PATH` | 图片上传：读取本地图片文件，粘贴到 AI 聊天对话框后再发送 prompt（可重复使用多次以上传多张图片）。触发条件见图片上传协议 §4 |
 | `--no-download-images` | 禁用图片自动下载（默认启用，从响应中提取图片 URL 下载到当前工作目录） |
 | `--resume-chatgpt=URL` | Read-only ChatGPT recovery: open an existing validated `/c/<id>` conversation, never type or send, and return its completed answer or exit 10 pending |
+| `--resume-muse=URL` | Muse chat target: `main` / `https://muse.ai/` (Main chat), `new` / `https://muse.ai/thread/new` (default), or `https://muse.ai/thread/<uuid>`. Also `AGENTCHAT_MUSE_URL`. CLI wins over env. |
 
 > 未识别的 `--flag` 会打 `WARN` 日志后忽略（v14 起；此前静默丢弃，是 `--locale` 空转数月、`--keep-tabs` 曾被拼进 prompt 这一类 bug 的根源）。`--from=` / `--only=` 空值会以 exit 64 硬失败。`--only`/`--single` 下 provider 名必须**精确匹配** key 或显示名（子串匹配仅在级联路径作为人类便利保留）。
 
@@ -543,7 +551,7 @@ index.js
 | **Doubao** | 字节跳动 React SPA、CSS Modules 哈希类名、agentic 工具/搜索阶段 stillWorkingCheck | `adapters/doubao.js` |
 | **MiMo** | React SPA 4s 延迟、DOM 遍历定位发送按钮 (无可靠 CSS selector) | `adapters/mimo.js` |
 | **DeepSeek** | 标准管线、ds-markdown 响应 | `adapters/deepseek.js` |
-| **Muse** | Draft/best-effort 选择器；链末位；live CDP prove 待 Karl 重开 social/browser | `adapters/muse.js` |
+| **Muse** | Draft/best-effort 选择器；链末位；live CDP prove 待 Karl 重开 social/browser。默认新会话 `/thread/new`（`--resume-muse=main` 回 Main chat，`--resume-muse=https://muse.ai/thread/<uuid>` 续旧线程）；导航复用按 **origin + pathname** 判定；quota 扫描忽略 `[data-message-role]` 与会话侧栏（`nav[aria-label="Side chats"]`），历史里的 "rate limit" 不再误判为限流 | `adapters/muse.js` |
 
 ---
 

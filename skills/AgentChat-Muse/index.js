@@ -210,7 +210,7 @@ function printHandoff() {
         PROVIDER_NOTE,
         '',
         'Fill before handing to human (no secrets in chat):',
-        `- Muse URL: https://muse.ai/  (or thread: ${EXAMPLE_THREADS.x} / ${EXAMPLE_THREADS.tiktok})`,
+        `- Muse URL: https://muse.ai/thread/new  (Main chat: https://muse.ai/ ; threads: ${EXAMPLE_THREADS.x} / ${EXAMPLE_THREADS.tiktok})`,
         '- Goal: chat | research | secondary-social (X|TikTok; LinkedIn parked)',
         '- Last Muse step visible:',
         '- Blocker: none | anti-bot Continue | CAPTCHA | waiting SMS | app-only | other',

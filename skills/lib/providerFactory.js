@@ -39,6 +39,8 @@ const flog = (key, msg) => { try { _tlog(key || 'factory', msg); } catch (_) {} 
 //   blockedUrlPatterns?: RegExp[], // post-nav URL regexes needing a human in the browser (CAPTCHA/consent/upsell) → 'auth'
 //   signedOutSelectors?: string[], // selector visible ⇒ signed-out landing page ON the provider domain → 'auth'
 //   quotaPatterns: RegExp[],  // body-text patterns for rate-limit detection
+//   quotaIgnoreSelectors?: string[], // CSS nodes to hide during quota innerText scan
+//   navReuse?: 'origin' | 'path', // 'path' requires origin+pathname match before skip-goto
 //   editorSelectors: string[],// CSS selectors for input element (tried in order)
 //   validateEditor?: (el: Element) => Promise<boolean>,  // extra validation
 //   input: (page, editor, prompt, opts) => Promise<boolean>, // input text; return true=ok
@@ -140,7 +142,70 @@ const DEFAULTS = {
     dismissPatterns: [], // overlays matching these are safe to dismiss (close button click)
     blockedUrlPatterns: [], // post-nav URLs classified as 'auth' (CAPTCHA/consent/interstitial)
     signedOutSelectors: [], // visible ⇒ signed-out landing page — fail fast as 'auth'
+    quotaIgnoreSelectors: [],
+    navReuse: 'origin',
 };
+
+function normalizeNavPathname(pathname) {
+    const p = String(pathname || '/');
+    if (p === '/') return '/';
+    return p.replace(/\/+$/, '') || '/';
+}
+
+/** True when the current tab is already on the navigation target. */
+function navAlreadyOn(currentUrl, targetUrl, mode = 'origin') {
+    try {
+        const here = new URL(currentUrl);
+        const target = new URL(targetUrl);
+        if (here.origin !== target.origin) return false;
+        // Same origin already implies equal hostname. Origin-mode skip-goto
+        // is therefore "any path on this host"; path mode requires pathname.
+        if (mode === 'path') {
+            return normalizeNavPathname(here.pathname) === normalizeNavPathname(target.pathname);
+        }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * Quota innerText collector. Runs in the page (Playwright evaluate) or in jsdom.
+ * Hides ignore-selector nodes with display:none so innerText excludes them,
+ * then restores. Detached clone+innerText is empty in Chromium.
+ */
+function quotaScanInPage(ignoreSelectors) {
+    const root = document.querySelector('main') || document.body;
+    if (!root) return '';
+    const ignore = Array.isArray(ignoreSelectors) ? ignoreSelectors : [];
+    const hidden = [];
+    const visibleText = (node) => {
+        if (typeof node.innerText === 'string') return node.innerText;
+        const walk = (n) => {
+            if (n.nodeType === 3) return n.nodeValue || '';
+            if (n.nodeType !== 1) return '';
+            if (n.style && n.style.display === 'none') return '';
+            return Array.from(n.childNodes).map(walk).join('');
+        };
+        return walk(node);
+    };
+    try {
+        if (ignore.length) {
+            let nodes;
+            try { nodes = root.querySelectorAll(ignore.join(',')); } catch (_) { nodes = []; }
+            for (const el of nodes) {
+                hidden.push([el, el.getAttribute('style')]);
+                el.style.display = 'none';
+            }
+        }
+        return visibleText(root) || '';
+    } finally {
+        for (const [el, style] of hidden) {
+            if (style == null) el.removeAttribute('style');
+            else el.setAttribute('style', style);
+        }
+    }
+}
 
 function chatGptResumeOnTimeoutEnabled(env = process.env) {
     return env.AGENTCHAT_CHATGPT_RESUME_ON_TIMEOUT === '1';
@@ -1913,25 +1978,19 @@ function createProviderRunner(cfg) {
     return async function run(page, prompt, timeoutMs, ctx, opts = {}) {
         const provStart = Date.now();
         const images = opts.images || [];
+        const navUrl = opts.targetUrl || C.url;
 
         // ── Step 1: Navigate ──
         // v12: when reusing an existing provider tab that is ALREADY on the
         // target origin, skip page.goto. Muse (and other SPAs) can sit on a
         // healthy chat URL whose next hard navigation never reaches
         // domcontentloaded within navTimeout — burning the whole provider.
+        // navReuse:'path' (Muse) requires pathname match so /thread/new is not
+        // skipped just because some other muse.ai thread is already open.
         try {
-            let alreadyOn = false;
-            try {
-                const cur = page.url();
-                const target = new URL(C.url);
-                const here = new URL(cur);
-                alreadyOn = here.origin === target.origin
-                    && (here.pathname === target.pathname
-                        || here.pathname.startsWith(target.pathname.replace(/\/?$/, ''))
-                        || target.hostname.replace(/^www\./, '') === here.hostname.replace(/^www\./, ''));
-            } catch (_) { alreadyOn = false; }
+            const alreadyOn = navAlreadyOn(page.url(), navUrl, C.navReuse);
             if (!alreadyOn) {
-                await page.goto(C.url, {
+                await page.goto(navUrl, {
                     waitUntil: C.navWaitUntil,
                     timeout: C.navTimeout,
                 });
@@ -2025,8 +2084,10 @@ function createProviderRunner(cfg) {
         // that skipped a healthy provider for the whole run. Real quota
         // notices render in the conversation/composer region inside <main>.
         try {
-            const bodyText = await page.evaluate(() =>
-                (document.querySelector('main') || document.body)?.innerText || '');
+            const bodyText = await page.evaluate(
+                quotaScanInPage,
+                C.quotaIgnoreSelectors || []
+            );
             for (const pattern of (C.quotaPatterns || [])) {
                 if (pattern.test(bodyText)) {
                     return classifyError(
@@ -2451,6 +2512,9 @@ module.exports = {
     clickSend,
     waitForCompletion,
     chatGptResumeOnTimeoutEnabled,
+    navAlreadyOn,
+    normalizeNavPathname,
+    quotaScanInPage,
     validateChatGptConversationUrl,
     submittedPendingResult,
     observeChatGptResponse,

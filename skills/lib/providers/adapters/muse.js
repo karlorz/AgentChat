@@ -11,14 +11,19 @@
  *   - Main chat: assistant turns as span.sr-only "Assistant message: …"
  *     inside div.flex.flex-col.gap-2. Prefer those; strip a11y prefix in
  *     postResponseHook.
- *   - Main chat is often agentic (history swallows literal proves). Prefer
- *     opening a fresh New side chat before send. Side chat uses [data-message-role=user|assistant] (sr-only often only
+ *   - Main chat (https://muse.ai/) is often agentic (history swallows literal
+ *     proves). Default chat target is a New session (https://muse.ai/thread/new).
+ *     Override with AGENTCHAT_MUSE_URL or OneWeb --resume-muse= (Main chat URL
+ *     or https://muse.ai/thread/<uuid>). New side chat is an in-page control,
+ *     not the new-session URL. Skip that click when already on /thread/new or
+ *     /thread/<uuid>.
+ *   - Side chat uses [data-message-role=user|assistant] (sr-only often only
  *     "You:"). Prefer those selectors; keep Main sr-only path as fallback.
  *
  * Auth domains remain path guesses for redirect detection. No secrets here.
  */
 
-const { COMMON_DISMISS_PATTERNS } = require('../../providerFactory');
+const { COMMON_DISMISS_PATTERNS, navAlreadyOn, normalizeNavPathname } = require('../../providerFactory');
 const { makeStillWorkingCheck } = require('../../stillWorking');
 
 let mlog = () => {};
@@ -26,6 +31,57 @@ try {
     const { log: _tlog } = require('../../terminal');
     mlog = (msg) => { try { _tlog('muse', msg); } catch (_) {} };
 } catch (_) { /* stay silent */ }
+
+const MUSE_HOME = 'https://muse.ai/';
+const MUSE_NEW_SESSION = 'https://muse.ai/thread/new';
+const MUSE_THREAD_UUID_RE = /^\/thread\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function museChatPathsMatch(currentUrl, targetUrl) {
+    return navAlreadyOn(currentUrl, targetUrl, 'path');
+}
+
+function isDedicatedMuseThreadPath(pathnameOrUrl) {
+    let p = String(pathnameOrUrl || '');
+    try {
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(p)) p = new URL(p).pathname;
+    } catch (_) {
+        return false;
+    }
+    p = normalizeNavPathname(p);
+    return p === '/thread/new' || MUSE_THREAD_UUID_RE.test(p);
+}
+
+/**
+ * Resolve the Muse chat URL for this run.
+ * Empty / `new` / `thread/new` → new session.
+ * `main` / `Main chat` / `home` → Main chat.
+ * Full https://muse.ai/thread/<uuid> or a bare uuid → that existing thread.
+ * Other hosts return null (caller fail-closed).
+ */
+function resolveMuseChatUrl(raw, env = process.env) {
+    const rawText = raw == null ? '' : String(raw);
+    const v = (rawText.trim().length ? rawText : (env.AGENTCHAT_MUSE_URL || '')).trim();
+    if (!v || /^(new|thread\/new)$/i.test(v)) return MUSE_NEW_SESSION;
+    if (/^(main|main\s*chat|home)$/i.test(v)) return MUSE_HOME;
+    if (MUSE_THREAD_UUID_RE.test('/thread/' + v)) return `https://muse.ai/thread/${v.toLowerCase()}`;
+    try {
+        const href = v.includes('://') ? v : `https://muse.ai/${v.replace(/^\//, '')}`;
+        const u = new URL(href);
+        // Only the chat host. Login subdomains (accounts.muse.ai) are not chat
+        // targets — accepting them would send a run to the sign-in page.
+        if (u.hostname !== 'muse.ai') return null;
+        if (u.username || u.password) return null;
+        const path = normalizeNavPathname(u.pathname);
+        if (path === '/') return MUSE_HOME;
+        if (path === '/thread/new') return MUSE_NEW_SESSION;
+        if (MUSE_THREAD_UUID_RE.test(path)) {
+            return `https://muse.ai${path}`;
+        }
+        return null;
+    } catch (_) {
+        return null;
+    }
+}
 
 const RESPONSE_SELECTORS = [
     // Side chat / modern Main: durable role attrs (no sr-only).
@@ -116,6 +172,11 @@ async function musePostResponseHook(page, text) {
 /** Prefer a fresh New side chat so Main's agentic history cannot swallow proves. */
 async function musePreInputHook(page) {
     try {
+        const href = page.url();
+        if (isDedicatedMuseThreadPath(href)) {
+            mlog(`preInput: already on dedicated thread (${href}) — skip New side chat`);
+            return;
+        }
         const opened = await page.evaluate(() => {
             const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
             const visible = (el) => {
@@ -384,7 +445,11 @@ async function museInput(page, editor, prompt) {
 
 module.exports = {
     key: 'muse',
-    url: 'https://muse.ai/',
+    // Static SSOT default. The per-run override is resolved in OneWeb
+    // (--resume-muse= / AGENTCHAT_MUSE_URL) and passed as opts.targetUrl, so
+    // this stays env-independent for doctor/setup consumers.
+    url: MUSE_NEW_SESSION,
+    navReuse: 'path',
     navPostDelay: 2500,
     navWaitUntil: 'commit',
     navTimeout: 60000,
@@ -402,6 +467,11 @@ module.exports = {
         /too\s*many\s*requests/i,
         /升级.*会员/i,
         /次数.*上限/i,
+    ],
+    // Transcript + sidebar titles must not trip quota_check (Muse has no <main>).
+    quotaIgnoreSelectors: [
+        '[data-message-role]',
+        'nav[aria-label="Side chats"]',
     ],
     dismissPatterns: [
         ...COMMON_DISMISS_PATTERNS,
@@ -456,6 +526,12 @@ module.exports = {
     stillGeneratingCheck: makeStillWorkingCheck({ responseSelectors: RESPONSE_SELECTORS }),
     stillGeneratingMaxHoldMs: 60_000,
 };
+
+module.exports.MUSE_HOME = MUSE_HOME;
+module.exports.MUSE_NEW_SESSION = MUSE_NEW_SESSION;
+module.exports.resolveMuseChatUrl = resolveMuseChatUrl;
+module.exports.museChatPathsMatch = museChatPathsMatch;
+module.exports.isDedicatedMuseThreadPath = isDedicatedMuseThreadPath;
 
 module.exports._musePostResponseHook = musePostResponseHook;
 module.exports._museCustomSend = museCustomSend;
