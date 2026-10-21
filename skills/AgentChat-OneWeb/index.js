@@ -93,7 +93,7 @@ const { connectWithRetry: _connectWithRetry, doctorCheck: _doctorCheck, ensureCh
 const { acquireBrowserSlot, releaseBrowserSlot } = require('../lib/locks');
 const { acquireSeatLock, releaseSeatLock } = require('../lib/seatLock');
 const { resolveAssetsDir } = require('../lib/assetsDir');
-const { pinThread, resolvePinnedThread, resolvePinnedThreadUrl } = require('../lib/threads');
+const { pinThread, resolvePinnedThreadUrl } = require('../lib/threads');
 
 // ── Adapt shared modules to OneWeb naming conventions ──
 const PREFIX = 'fallback';
@@ -1231,8 +1231,8 @@ async function main() {
         const resolved = rawUrl ? ADAPTER_CONFIGS.muse.resolveMuseChatUrl(rawUrl) : null;
         // Only existing threads are pinnable — pinning "new"/"main" would
         // make the registry default pin meaningless.
-        if (!resolved || !ADAPTER_CONFIGS.muse.isDedicatedMuseThreadPath(resolved)
-            || resolved === 'https://muse.ai/thread/new') {
+        const muse = ADAPTER_CONFIGS.muse;
+        if (!resolved || !muse.isDedicatedMuseThreadPath(resolved) || resolved === muse.MUSE_NEW_SESSION) {
             usageExit('--pin-muse-thread= requires an existing thread URL (https://muse.ai/thread/<uuid>)');
         }
         if (!/^[\w][\w.-]*$/.test(name)) {
