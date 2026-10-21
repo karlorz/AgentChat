@@ -22,6 +22,13 @@
  *   node index.js --ephemeral-tab "..."  # dedicated new tab, never reused, closed on exit
  *                                   # (required by same-provider concurrency:
  *                                   # AGENTCHAT_MAX_TABS_PER_PROVIDER > 1)
+ *   node index.js --pin-muse-thread=https://muse.ai/thread/<uuid>[,name]
+ *                                 # pin a standing Muse thread into the machine-local
+ *                                 # registry (~/.agentchat/threads.json)
+ *   node index.js --show-muse-thread
+ *                                 # print the active pinned Muse thread URL
+ *                                 # (Muse target order: --resume-muse= > AGENTCHAT_MUSE_URL
+ *                                 #  > registry default pin > new thread)
  *
  * Exit codes:
  *   0 - Success (response on stdout)
@@ -86,6 +93,7 @@ const { connectWithRetry: _connectWithRetry, doctorCheck: _doctorCheck, ensureCh
 const { acquireBrowserSlot, releaseBrowserSlot } = require('../lib/locks');
 const { acquireSeatLock, releaseSeatLock } = require('../lib/seatLock');
 const { resolveAssetsDir } = require('../lib/assetsDir');
+const { pinThread, resolvePinnedThread, resolvePinnedThreadUrl } = require('../lib/threads');
 
 // ── Adapt shared modules to OneWeb naming conventions ──
 const PREFIX = 'fallback';
@@ -759,6 +767,28 @@ async function downloadAllImages(response, destDir, opts) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /**
+ * Default Muse chat target when no explicit --resume-muse= was given.
+ * Selection order (first hit wins):
+ *   1. AGENTCHAT_MUSE_URL env
+ *   2. registry default pin (~/.agentchat/threads.json, code-level builtin
+ *      fallback when the file is absent — see lib/threads.js)
+ *   3. new thread (adapter default, https://muse.ai/thread/new)
+ */
+function defaultMuseTargetUrl() {
+    const envUrl = String(process.env.AGENTCHAT_MUSE_URL || '').trim();
+    if (envUrl) {
+        return ADAPTER_CONFIGS.muse.resolveMuseChatUrl() || ADAPTER_CONFIGS.muse.url;
+    }
+    const pinned = resolvePinnedThreadUrl('muse');
+    if (pinned) {
+        const resolved = ADAPTER_CONFIGS.muse.resolveMuseChatUrl(pinned);
+        if (resolved) return resolved;
+        log(`WARN: pinned muse thread URL invalid (${pinned}) — falling back to a new thread`);
+    }
+    return ADAPTER_CONFIGS.muse.url;
+}
+
+/**
  * tryAllProviders — iterate through the provider chain, return first success.
  *
  * @param {Browser} browser - CDP browser connection
@@ -772,11 +802,9 @@ async function tryAllProviders(browser, prompt, ctx, options = {}) {
     // Only manage our own tabs — page.close() for cleanup, but NEVER browser.close().
     const { keepTabs = true } = options;
     const ephemeralTab = !!options.ephemeralTab; // v19: never reuse, close on exit
-    // Muse chat target: main() passes the CLI/env-resolved URL; in-process
-    // callers that omit it still honor AGENTCHAT_MUSE_URL via the adapter.
-    const museTargetUrl = options.museTargetUrl
-        || ADAPTER_CONFIGS.muse.resolveMuseChatUrl()
-        || ADAPTER_CONFIGS.muse.url;
+    // Muse chat target: main() passes the CLI/env/registry-resolved URL;
+    // in-process callers that omit it get the same env > registry > new order.
+    const museTargetUrl = options.museTargetUrl || defaultMuseTargetUrl();
     const totalTimeout = options.totalTimeout || DEFAULT_TOTAL_TIMEOUT;
     const providerTimeout = options.providerTimeout
         || (options.singleAttempt
@@ -1143,6 +1171,8 @@ async function main() {
         'Usage: node index.js [--timeout=MS] [--from=NAME] [--only=NAME] [--single] [--image] [--image-path=PATH] [--download-dir=PATH] [--locale=xx_XX] [--keep-tabs] [--close] [--ephemeral-tab] [--deep-research] [--no-download-images] [--smoke] [--doctor] "Your prompt"\n' +
         '       node index.js --resume-chatgpt="https://chatgpt.com/c/<conversation-id>" [--timeout=MS]\n' +
         '       node index.js --only=muse [--resume-muse=URL] "Your prompt"\n' +
+        '       node index.js --pin-muse-thread=https://muse.ai/thread/<uuid>[,name]   # pin a standing Muse thread (registry: ~/.agentchat/threads.json)\n' +
+        '       node index.js --show-muse-thread                                     # print the active pinned Muse thread URL\n' +
         '       [--deep-research] (30min/provider budget, opt-in deep research mode)\n' +
         '       echo "prompt" | node index.js [flags]';
     // v14: usage errors exit 64 (BSD EX_USAGE), WITH a receipt. They used to
@@ -1179,6 +1209,40 @@ async function main() {
     // further below. Neither should be pushed into `remaining` — previously both
     // were, which meant they'd get joined into the `prompt` string (harmless today
     // only because the smoke/doctor branches short-circuit before `prompt` is used).
+    //
+    // --show-muse-thread / --pin-muse-thread are action flags (like --doctor):
+    // they do their registry work and return before any CDP/prompt handling.
+    if (args.includes('--show-muse-thread')) {
+        // stdout carries ONLY the URL so scripts can capture it directly.
+        const pinned = resolvePinnedThreadUrl('muse');
+        if (!pinned) {
+            process.stderr.write('[fallback] no pinned muse thread in the registry\n');
+            process.exit(1);
+        }
+        process.stdout.write(pinned + '\n');
+        return;
+    }
+    const pinMuseArg = args.find(a => a.startsWith('--pin-muse-thread='));
+    if (pinMuseArg) {
+        const raw = pinMuseArg.slice('--pin-muse-thread='.length).trim();
+        const comma = raw.indexOf(',');
+        const rawUrl = (comma >= 0 ? raw.slice(0, comma) : raw).trim();
+        const name = ((comma >= 0 ? raw.slice(comma + 1) : '').trim()) || 'default';
+        const resolved = rawUrl ? ADAPTER_CONFIGS.muse.resolveMuseChatUrl(rawUrl) : null;
+        // Only existing threads are pinnable — pinning "new"/"main" would
+        // make the registry default pin meaningless.
+        if (!resolved || !ADAPTER_CONFIGS.muse.isDedicatedMuseThreadPath(resolved)
+            || resolved === 'https://muse.ai/thread/new') {
+            usageExit('--pin-muse-thread= requires an existing thread URL (https://muse.ai/thread/<uuid>)');
+        }
+        if (!/^[\w][\w.-]*$/.test(name)) {
+            usageExit(`invalid thread name "${name}" (letters, digits, '-', '_', '.')`);
+        }
+        const entry = pinThread({ name, provider: 'muse', url: resolved });
+        process.stdout.write(entry.url + '\n');
+        log(`pinned muse thread "${entry.name}" → ${entry.url}`);
+        return;
+    }
     const remaining = [];
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
@@ -1273,13 +1337,14 @@ async function main() {
     }
 
     const museTargetUrl = (() => {
-        const resolve = ADAPTER_CONFIGS.muse.resolveMuseChatUrl;
+        // Muse thread selection order: explicit --resume-muse= flag >
+        // AGENTCHAT_MUSE_URL env > registry default pin > new thread.
         if (resumeMuseRaw != null) {
-            const resolved = resolve(resumeMuseRaw);
+            const resolved = ADAPTER_CONFIGS.muse.resolveMuseChatUrl(resumeMuseRaw);
             if (!resolved) usageExit('invalid Muse chat URL (expected main, new, or https://muse.ai/thread/<uuid>)');
             return resolved;
         }
-        return resolve() || ADAPTER_CONFIGS.muse.url;
+        return defaultMuseTargetUrl();
     })();
 
     // Read prompt
@@ -1627,6 +1692,8 @@ module.exports = {
     PROVIDER_CHAIN,
     formatPendingLine,
     tryAllProviders,
+    // Muse thread selection: env > registry default pin > new thread
+    defaultMuseTargetUrl,
     // v13: exported for tests and for IndependentTasks' own post-processing
     extractImageUrls,
     downloadAllImages,

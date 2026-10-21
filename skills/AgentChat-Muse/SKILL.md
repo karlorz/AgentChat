@@ -45,7 +45,7 @@ Quote that line in the final answer. Missing receipt = did not execute.
 
 | Layer | What |
 | --- | --- |
-| **OneWeb provider** | `PROVIDER_CHAIN` key `muse` → `adapters/muse.js` auto-loaded into RUNNERS. Default chat is a **new session** `https://muse.ai/thread/new`. Main chat is `https://muse.ai/` via `--resume-muse=main` or `AGENTCHAT_MUSE_URL`. Existing threads via `--resume-muse=https://muse.ai/thread/<uuid>`. |
+| **OneWeb provider** | `PROVIDER_CHAIN` key `muse` → `adapters/muse.js` auto-loaded into RUNNERS. Chat target order: `--resume-muse=` > `AGENTCHAT_MUSE_URL` > registry default pin > new session `https://muse.ai/thread/new`. Main chat is `https://muse.ai/` via `--resume-muse=main` or `AGENTCHAT_MUSE_URL`. Existing threads via `--resume-muse=https://muse.ai/thread/<uuid>`. |
 | **This skill** | Operator / worker modes: ops checklist, prompt templates, handoff receipts, worker plans. Does **not** launch live CDP signup tonight. |
 
 Do **not** say "Muse is outside PROVIDER_CHAIN". It is on the chain (near end). Prefer stronger providers for production chat until live Muse prove lands.
@@ -78,7 +78,7 @@ playwright-cli attach --cdp="$AGENTCHAT_CDP_URL"
 playwright-cli tab-list
 ```
 
-The loader reports the selected `.env` path on stderr. Process environment overrides file values; `CDP_HOST` and `CDP_PORT` select the endpoint. Default OneWeb Muse chat is `https://muse.ai/thread/new`. Reuse a standing thread only when `--resume-muse=` / `AGENTCHAT_MUSE_URL` names that URL; otherwise open a new tab and leave the standing thread in place. Check for the visible `textarea[placeholder="Message"]` before declaring the session ready. Keep test messages within the user's explicit authorization.
+The loader reports the selected `.env` path on stderr. Process environment overrides file values; `CDP_HOST` and `CDP_PORT` select the endpoint. Muse chat target selection: `--resume-muse=` > `AGENTCHAT_MUSE_URL` > registry default pin (`~/.agentchat/threads.json`; see "Known Muse threads") > `https://muse.ai/thread/new`. When the target is a standing thread, reuse that tab and leave the thread in place. Check for the visible `textarea[placeholder="Message"]` before declaring the session ready. Keep test messages within the user's explicit authorization.
 
 On Box Fork-N desktops, `DISPLAY :N` maps to CDP port `9222+N`. Use this to diagnose a mismatch against the Chrome process and its open tabs. Pin the intended desktop in the local AgentChat `.env`; keep `AGENTCHAT_NO_AUTOSTART=1` for an existing operator-owned browser. The resolved endpoint also applies when using Playwright from another project directory.
 
@@ -93,10 +93,20 @@ Muse "does everything" as an agent worker — treat it like a capable chat LLM w
 * **False quota block** — Muse has no `<main>`, so the quota scan reads the whole body with `[data-message-role]` and `nav[aria-label="Side chats"]` hidden. An older reply that merely mentions "rate limit" no longer reports `quota`; a live limit banner outside the transcript still does. The hidden nodes are restored after the scan.
 * **Image upload** — muse.ai's CSP rejects `fetch('data:…')`, so the shared clipboard paste tiers fail on this host. The adapter sets `imageUpload: 'file-input'` and the pipeline attaches through the composer's native `input[type=file]`. Verified 2026-10-21: an image carrying the code word `PVELXC-4471` was attached and Muse echoed exactly that code word back.
 
-## Known Muse threads (example pointers only)
+## Known Muse threads (registry + standing pins)
 
-| Platform | Thread (public path) | Note |
+Pinned threads are a first-class, agent-agnostic feature: the machine-local registry at `~/.agentchat/threads.json` (`$AGENTCHAT_HOME/threads.json`) holds named pins, and `skills/lib/threads.js` carries a code-level fallback seed so the standing company thread is discoverable even when the file is absent. Any agent (grok/claude/codex/opencode) can resume the standing thread without external notes:
+
+```bash
+node ~/.agents/skills/AgentChat-OneWeb/index.js --show-muse-thread
+node ~/.agents/skills/AgentChat-OneWeb/index.js --pin-muse-thread=https://muse.ai/thread/<uuid>[,name]
+```
+
+Muse thread selection order: explicit `--resume-muse=` flag > `AGENTCHAT_MUSE_URL` env > registry default pin (most recently pinned entry for provider `muse`) > new thread. Default-pin changes: pin again with a newer `pinned_at` (today) to make a thread the default.
+
+| Name | Thread (public path) | Note |
 | --- | --- | --- |
+| `company-main` (registry default pin) | `https://muse.ai/thread/26242595-55a6-4263-9864-72e7dc71ab57` | Standing company Muse thread (orchestration infographic); seeded 2026-10-21 |
 | X (secondary) | `https://muse.ai/thread/9c35d3a6-81fc-44ca-a199-046789429bdb` | Often pauses at phone Continue (anti-automation) |
 | TikTok (secondary) | `https://muse.ai/thread/5d1e050f-b198-4143-8e77-d881cfe69403` | Pause before final creation; App path after |
 | LinkedIn | parked | Do not resume unless Karl reopens |
