@@ -66,7 +66,7 @@ function processIdentity(pid) {
     try {
         const out = execFileSync('ps', ['-p', String(pid), '-o', 'pid=,lstart=,command='], { encoding: 'utf8', timeout: 5000 }).trim();
         if (!out) return null;
-        const m = out.match(/^\s*(\d+)\s+(.*?)\s{2,}(.*)$/s);
+        const m = out.match(/^\s*(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d+\s+\d{1,2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/s);
         if (!m) return null;
         return { pid: Number(m[1]), startTime: m[2].trim(), command: m[3].trim() };
     } catch (_) {
