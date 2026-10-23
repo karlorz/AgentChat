@@ -5,7 +5,7 @@ description: Muse.ai LLM / agent-worker subagent + OneWeb PROVIDER_CHAIN adapter
 
 # AgentChat-Muse — Muse.ai LLM / agent worker (provider + subagent)
 
-> **Last updated**: 2026-09-29
+> **Last updated**: 2026-10-23
 > **Job**: drive Muse.ai as a general **LLM / agent worker** (chat, research, secondary social ops) with a draft-only operator layer. Muse **IS** on OneWeb `PROVIDER_CHAIN` via `skills/lib/providers/adapters/muse.js` (near end — draft/unproven relative to peers). This skill is the operator / subagent layer on top.
 > **Live posture**: draft-only. Adapter selectors are best-effort; live CDP chat prove is out of scope until Karl reopens social/browser work. `:8737` / Coolify stay off. No first GitHub release from this skill.
 
@@ -160,10 +160,28 @@ scripts/seat-lock release 9227 --owner computerUse --token <token>
 
 Lock path: `${AGENTCHAT_SEAT_LOCK_DIR:-/tmp}/agentchat-seat-<port>.lock`. OneWeb acquires this lock only for muse-only runs (`--only=muse` / `--from=muse --single`); busy logs `blocked:busy` and exits 3 without touching the page.
 
+## Raw-CDP ask: thread tab auto-open (2026-10-23)
+
+`skills/AgentChat-Muse/museTab.js` is the shared find-or-open step for raw-CDP Muse asks (the box `agentchat-muse-ask` fallback, `muse-cdp-ask.mjs`, and its read-only `--reread` mode). After a box reset the operator Chrome came back without the standing thread tab, and every ask failed with "no Muse thread tab" (exit 4). Now:
+
+* **Reuse first.** A page whose URL starts with the thread URL is reused as-is.
+* **Open exactly one.** Otherwise `/json/list` is re-checked once (no duplicate tab if another caller raced), then one tab is opened with `/json/new?<threadUrl>` (`PUT` first, `GET` fallback). The caller waits up to ~30 s for it to settle on the thread URL, then retries the composer (`textarea[placeholder="Message"]`) for ~15 s.
+* **Signed out → exit 7.** A sign-in URL on the new tab (`/login`, `/signin`, `/auth`, `accounts.google.com`, `accounts.muse.ai`), or sign-in text with no composer after attach (`SIGNEDOUT_EXPR`), returns `{ err: 'signedout' }`; callers exit **7 "Muse login needed"** and relay to a human. It never types credentials or attempts a login.
+* **Still never** closes or reloads tabs, and never relaunches Chrome.
+
+```js
+const { findOrOpenMuseTab, SIGNEDOUT_EXPR, EXIT_SIGNED_OUT } = require('./museTab');
+const r = await findOrOpenMuseTab('http://127.0.0.1:9227', 'https://muse.ai/thread/<uuid>');
+// { tab, opened } | { err: 'list'|'open'|'signedout'|'notab', detail }
+```
+
+Ask exit codes: `0` ok · `2` too long · `4` no tab / composer / CDP error · `5` timeout · `6` not delivered · `7` Muse signed out. Tests: `skills/lib/test/test_muse_tab.js` (mocked CDP HTTP).
+
 ## Joining the skill set
 
 * Directory: `skills/AgentChat-Muse/`
 * Provider: `skills/lib/providers/chain.js` + `adapters/muse.js`
+* Raw-CDP thread tab helper: `skills/AgentChat-Muse/museTab.js` (find-or-open, signed-out detection)
 * Hub inventory: `skills/lib/providers/productMap.js` → `HUB_SKILLS` key `muse`
 * Demo card: `demo/muse.html` + `demo/index.html`
 * Install like other skills: symlink/copy `skills/AgentChat-Muse` into `~/.agents/skills/` (and keep sibling `skills/lib` available for `receipt.js`)
