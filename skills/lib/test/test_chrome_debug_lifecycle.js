@@ -25,6 +25,7 @@ const SCRIPTS = path.join(ROOT, 'scripts');
 const BRIDGE = path.join(SCRIPTS, 'run-helper.cmd');
 const ENGINE = path.join(SCRIPTS, 'lib', 'chrome-debug-lifecycle.cjs');
 const FAKE = path.join(__dirname, 'fixtures', 'fake_chrome.js');
+const posix = require(path.join(ROOT, 'scripts', 'lib', 'posix-lifecycle-adapter.cjs'));
 // The engine spawns Chrome directly (no shell), so the fixture must be executable.
 fs.chmodSync(FAKE, 0o755);
 
@@ -140,6 +141,56 @@ async function waitFor(fn, timeoutMs, stepMs = 100) {
 
 function runSync(args, env) {
     return spawnSync(process.execPath, [ENGINE, ...args], { encoding: 'utf8', env, timeout: 60_000 });
+}
+
+// ── Pure-function test: descendantPidsFromPsTable ───────────────────────────
+function caseDescendantPidsFromPsTable() {
+    console.log('Case: descendantPidsFromPsTable (pure-function table parsing & cycle safety)');
+
+    // 1. parent with two children -> both returned, parent excluded
+    const t1 = `
+      100     1
+      101   100
+      102   100
+    `;
+    const r1 = posix.descendantPidsFromPsTable(t1, 100).sort((a, b) => a - b);
+    assert('parent with two children', JSON.stringify(r1) === JSON.stringify([101, 102]), JSON.stringify(r1));
+
+    // 2. multi-level (1->2->3) -> [2, 3] (sorted)
+    const t2 = `
+        1     0
+        2     1
+        3     2
+    `;
+    const r2 = posix.descendantPidsFromPsTable(t2, 1).sort((a, b) => a - b);
+    assert('multi-level (1->2->3)', JSON.stringify(r2) === JSON.stringify([2, 3]), JSON.stringify(r2));
+
+    // 3. root pid excluded even if a row lists pid as its own child (pid ppid both equal root)
+    const t3 = `
+      500   500
+      501   500
+    `;
+    const r3 = posix.descendantPidsFromPsTable(t3, 500);
+    assert('root pid excluded when self-referencing child', JSON.stringify(r3) === JSON.stringify([501]), JSON.stringify(r3));
+
+    // 4. cycle A<->B (10 ppid 20, 20 ppid 10) starting at 10 -> [20] only, does not hang
+    const t4 = `
+       20    10
+       10    20
+    `;
+    const r4 = posix.descendantPidsFromPsTable(t4, 10);
+    assert('cycle A<->B terminates without hang and excludes root', JSON.stringify(r4) === JSON.stringify([20]), JSON.stringify(r4));
+
+    // 5. padded columns like real ps ("  101  100") still parse
+    const t5 = '   101   100   \n   102   100  \n';
+    const r5 = posix.descendantPidsFromPsTable(t5, 100).sort((a, b) => a - b);
+    assert('padded columns parse correctly', JSON.stringify(r5) === JSON.stringify([101, 102]), JSON.stringify(r5));
+
+    // 6. empty / garbage text -> []
+    const r6a = posix.descendantPidsFromPsTable('', 100);
+    const r6b = posix.descendantPidsFromPsTable(null, 100);
+    const r6c = posix.descendantPidsFromPsTable('header\nPID PPID\ngarbage line\n101 abc', 100);
+    assert('empty / garbage text yields empty array', r6a.length === 0 && r6b.length === 0 && r6c.length === 0, `r6a=${JSON.stringify(r6a)} r6b=${JSON.stringify(r6b)} r6c=${JSON.stringify(r6c)}`);
 }
 
 // ── Case 1: one-shot launch ─────────────────────────────────────────────────
@@ -335,6 +386,8 @@ async function caseStopDuringBackoff() {
 }
 
 (async () => {
+    caseDescendantPidsFromPsTable();
+    killFakeChromes();
     await caseOneShot();
     killFakeChromes();
     await caseDaemonCleanExit();

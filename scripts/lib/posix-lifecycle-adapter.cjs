@@ -119,22 +119,42 @@ function spawnSupervisor(nodeExe, argv, env, logFile) {
     }
 }
 
-/** Collect descendants of pid (children, recursively). */
-function descendantPids(pid) {
+/** Parse `ps -A -o pid=,ppid=` text into descendants of pid (excludes pid; cycle-safe). */
+function descendantPidsFromPsTable(text, pid) {
+    const root = Number(pid);
+    const children = new Map(); // ppid -> [childPid]
+    const src = text == null ? '' : String(text);
+    for (const line of src.split(/\r?\n/)) {
+        const m = line.trim().match(/^(\d+)\s+(\d+)\s*$/);
+        if (!m) continue;
+        const child = Number(m[1]);
+        const parent = Number(m[2]);
+        if (!children.has(parent)) children.set(parent, []);
+        children.get(parent).push(child);
+    }
     const seen = new Set();
-    let frontier = [String(pid)];
+    const frontier = [root];
     while (frontier.length) {
-        try {
-            const out = execFileSync('ps', ['-o', 'pid=', '--ppid', frontier.join(',')], { encoding: 'utf8', timeout: 5000 });
-            const next = out.split(/\s+/).map(s => s.trim()).filter(Boolean);
-            const fresh = next.filter(p => !seen.has(p) && Number(p) !== pid);
-            for (const p of fresh) seen.add(p);
-            frontier = fresh;
-        } catch (_) {
-            frontier = [];
+        const cur = frontier.pop();
+        const kids = children.get(cur) || [];
+        for (const k of kids) {
+            if (k === root) continue;          // exclude pid itself
+            if (seen.has(k)) continue;         // no cycles
+            seen.add(k);
+            frontier.push(k);
         }
     }
-    return [...seen].map(Number);
+    return [...seen];
+}
+
+function descendantPids(pid) {
+    let out = '';
+    try {
+        out = execFileSync('ps', ['-A', '-o', 'pid=,ppid='], { encoding: 'utf8', timeout: 5000 });
+    } catch (_) {
+        return [];
+    }
+    return descendantPidsFromPsTable(out, pid);
 }
 
 /** Graceful then forced stop of pid and its descendants (owned tree only). */
@@ -159,4 +179,4 @@ function terminateTree(pid, opts = {}) {
     return !all.some(p => isProcessAlive(p));
 }
 
-module.exports = { discoverChrome, isProcessAlive, processIdentity, spawnDetached, spawnSupervisor, terminateTree };
+module.exports = { discoverChrome, isProcessAlive, processIdentity, spawnDetached, spawnSupervisor, terminateTree, descendantPids, descendantPidsFromPsTable };
