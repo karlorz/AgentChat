@@ -11,7 +11,7 @@ description: 并行分发 N 道独立任务给多个浏览器 AI，回收后由 
 
 ## 核心模型
 
-N 道独立任务，M 个能力等同的 AI（最多 7：gemini/chatgpt/qwen/kimi/minimax/mimo/deepseek），纯分发、零协作。
+N 道独立任务，M 个能力等同的 AI（最多 12：gemini/chatgpt/claude/grok/kimi/qwen/minimax/chatglm/doubao/mimo/deepseek/muse），纯分发、零协作。
 
 ```
 题目 → 按主题分组 → JSON Plan → node index.js 并行派发 → 校验 → 合成 → md2pdf.sh → PDF

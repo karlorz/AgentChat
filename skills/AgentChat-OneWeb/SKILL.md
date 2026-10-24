@@ -1,6 +1,6 @@
 ---
 name: AgentChat-OneWeb
-description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT->Claude->Qwen->Kimi->MiniMax->ChatGLM->Doubao->MiMo->DeepSeek). Use for AI provider failover, fallback chain, multi-provider routing, or "send to any available AI". MANDATORY EXECUTION - invoking this skill REQUIRES running `node ~/.agents/skills/AgentChat-OneWeb/index.js "<prompt>"` as the FIRST action and quoting its `[receipt] AGENTCHAT_RUN` line in the final answer; explaining the skill or answering from model knowledge without a receipt is a violation.
+description: Multi-provider CDP bridge with automatic fallback (Gemini->ChatGPT->Claude->Grok->Kimi->Qwen->MiniMax->ChatGLM->Doubao->MiMo->DeepSeek->Muse). Use for AI provider failover, fallback chain, multi-provider routing, or "send to any available AI". MANDATORY EXECUTION - invoking this skill REQUIRES running `node ~/.agents/skills/AgentChat-OneWeb/index.js "<prompt>"` as the FIRST action and quoting its `[receipt] AGENTCHAT_RUN` line in the final answer; explaining the skill or answering from model knowledge without a receipt is a violation.
 ---
 
 # AI Fallback Chain — Multi-Provider CDP Bridge
@@ -282,7 +282,7 @@ Conversation URLs are transient recovery data. They may appear in the immediate 
 ## Fallback Chain (Priority Order)
 
 ```
-Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek
+Gemini → ChatGPT → Claude → Grok → Kimi → Qwen → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek → Muse
 (newest Argon + high reasoning default)                            (last resort)
 ```
 
@@ -517,9 +517,11 @@ index.js
 │   ├── gemini                — config: lib/providers/adapters/gemini.js
 │   ├── chatgpt               — config: lib/providers/adapters/chatgpt.js
 │   ├── claude                — config: lib/providers/adapters/claude.js
-│   ├── qwen                  — config: lib/providers/adapters/qwen.js
+│   ├── grok                  — config: lib/providers/adapters/grok.js
 │   ├── kimi                  — config: lib/providers/adapters/kimi.js
+│   ├── qwen                  — config: lib/providers/adapters/qwen.js
 │   ├── minimax               — config: lib/providers/adapters/minimax.js
+│   ├── chatglm               — config: lib/providers/adapters/chatglm.js
 │   ├── doubao                — config: lib/providers/adapters/doubao.js
 │   ├── mimo                  — config: lib/providers/adapters/mimo.js
 │   ├── deepseek              — config: lib/providers/adapters/deepseek.js
