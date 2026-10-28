@@ -7,6 +7,8 @@ node_modules/
 __pycache__/
 /*.patch
 
+.features.local.json
+
 # Provider-extracted images default to ~/.agentchat/assets.
 # Catch cwd leftovers and an optional in-repo cache.
 /ai-image-*

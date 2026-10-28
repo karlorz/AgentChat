@@ -96,6 +96,8 @@ node skills/AgentChat-WebSubAgent/index.js --doctor    # 串行管道环境检�
 node skills/AgentChat-agentweb-setup/index.js          # /agentweb-setup 登录态检测
 ```
 
+> 功能开关清单、优先级与诊断命令（`npm run doctor:features`）见 [FEATURE-FLAGS.md](FEATURE-FLAGS.md)。
+
 ---
 
 ## 📁 目录结构
