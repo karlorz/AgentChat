@@ -1,7 +1,7 @@
 {
   "name": "agentchat-oneweb",
   "version": "1.2.0",
-  "description": "Multi-provider AI CDP bridge with automatic fallback: Gemini → ChatGPT → Claude → Qwen → Kimi → MiniMax → MiMo → DeepSeek",
+  "description": "Multi-provider AI CDP bridge with automatic fallback: Gemini → ChatGPT → Claude → Grok → Kimi → Qwen → MiniMax → ChatGLM → Doubao → MiMo → DeepSeek → Muse",
   "main": "index.js",
   "scripts": {
     "test": "node index.js --smoke",

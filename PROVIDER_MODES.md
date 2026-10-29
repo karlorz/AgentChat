@@ -1,7 +1,6 @@
 # Provider mode toggles plan (thinking / web search / deep research)
 
-Status: Phase A implemented + live-verified (Grok, Kimi) 2026-09-08 (commit
-470dd9d). Phase B implemented + live-verified (Claude, Gemini) 2026-09-09;
+Status: Phase A implemented + live-verified (Grok, Kimi) 2026-09-08. Phase B implemented + live-verified (Claude, Gemini) 2026-09-09;
 ChatGPT DR live test in progress; Qwen blocked on user login (QR wall).
 
 ## Scope — top 5 of PROVIDER_CHAIN (skills/lib/providers/chain.js)

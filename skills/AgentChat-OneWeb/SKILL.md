@@ -579,7 +579,7 @@ index.js
 ## Code Location
 
 - `index.js` — CLI 入口 + fallback 编排器
-- `lib/providerFactory.js` — 10-step config-driven pipeline (所有 8 个 provider 共享)
+- `lib/providerFactory.js` — 10-step config-driven pipeline (所有 12 个 provider 共享)
 - `lib/providers/adapters/<name>.js` — 各 provider 差异配置
 - `lib/providers/chain.js` — 优先级顺序 (与 IndependentTasks 共享的单一真相源)
 - `SKILL.md` — AI-facing operational guide

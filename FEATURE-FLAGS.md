@@ -103,4 +103,4 @@ These env vars carry a value; they are parameters and stay out of the registry:
 (`AGENTCHAT_ASSETS_DIR`, `AGENTCHAT_HOME`, `AGENTCHAT_ENV_FILE`), ports
 (`CDP_PORT`, `CDP_HOST`) and the `AGENTCHAT_MAX_*` caps.
 
-Design notes: `projects/infrastructure/architecture/2026-10-28-dd-feature-flag-dev-cycle.md`.
+Design notes: `wiki projects/infrastructure/architecture/2026-10-28-dd-feature-flag-dev-cycle.md`.
