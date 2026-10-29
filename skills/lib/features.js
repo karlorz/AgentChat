@@ -52,10 +52,12 @@ const _GLOBAL_FLAGS = [
 ];
 
 function _providerFlag(key) {
+    // muse promoted experimental -> stable by Karl decision 2026-10-29 (MUSE-PROMOTE):
+    // it is actively used in PROVIDER_CHAIN, so default-on stable is the truth.
     return Object.freeze({
         id: 'provider' + key.charAt(0).toUpperCase() + key.slice(1),
         key: `PROVIDER_${key.toUpperCase()}`,
-        stage: key === 'muse' ? 'experimental' : 'stable',
+        stage: 'stable',
         defaultEnabled: true,
     });
 }
@@ -65,12 +67,8 @@ const FEATURE_FLAGS = Object.freeze(
     [..._GLOBAL_FLAGS, ...PROVIDER_KEYS.map(_providerFlag)].map((f) => Object.freeze(f))
 );
 
-const EXCEPTIONS = Object.freeze([
-    Object.freeze({
-        id: 'providerMuse',
-        note: 'draft adapter already in chain; default-on predates FF-01; Karl decides promotion or default-off',
-    }),
-]);
+// Empty since 2026-10-29: the providerMuse exception was retired by MUSE-PROMOTE.
+const EXCEPTIONS = Object.freeze([]);
 
 /**
  * Read the opt-in local override map.

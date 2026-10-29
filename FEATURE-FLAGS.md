@@ -57,8 +57,9 @@ A default-off `experimental` flag becomes default-on with a two-line change in
 +        defaultEnabled: true,
 ```
 
-The current exception is `providerMuse`: draft adapter already in chain;
-default-on predates FF-01; Karl decides promotion or default-off.
+`EXCEPTIONS` is empty since 2026-10-29: `providerMuse` was promoted to
+stage `stable` (default-on) by Karl decision 2026-10-29 (MUSE-PROMOTE); the
+adapter is actively used in PROVIDER_CHAIN.
 
 ## Doctor
 
