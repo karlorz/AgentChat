@@ -27,6 +27,17 @@
 | **agentweb-setup** | 登录态检测 | 挂到已运行 Chrome，分类每个 provider 会话，引导登录未就绪项（Doubao 区域门 / Claude org-disabled） | `/agentweb-setup` |
 | **AgentChat-Muse** | Muse.ai LLM/agent worker + provider | OneWeb `muse` adapter（链末）+ 子代理层：chat/research/次账号 ops；OTP 纪律、Continue 反爬、TikTok App path；draft-only | `/AgentChat-Muse` |
 
+## 🌐 赞助商 · IPWO 住宅代理
+
+<a href="https://www.ipwo.net/?ref=githubAgentChat"><img src="ipwo.png" alt="IPWO 住宅代理" width="100%"></a>
+
+网页 AI 对 IP 质量很敏感，机房 IP 容易触发风控或验证码。**IPWO 住宅代理**提供 195+ 个国家和地区的 9000 万+ 住宅 IP 资源，支持 HTTP(S) / SOCKS5 协议、国家及城市级定位和灵活会话配置，适用于海外 AI 服务访问、浏览器自动化、跨境开发及数据采集等场景。
+
+- 🔄 动态住宅 / 静态住宅 / 不限量住宅代理，动态 IP 支持**免费测试**
+- 💰 静态 IP 低至 **9.9 元/月/条**，9 折优惠码：**`0202`**
+
+👉 <a href="https://www.ipwo.net/?ref=githubAgentChat"><ins>前往 IPWO 官网免费测试</ins></a>
+
 ---
 
 ## 🏗️ Architecture
